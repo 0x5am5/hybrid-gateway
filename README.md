@@ -240,3 +240,7 @@ CI runs the lint and type-check from `AGENTS.md` plus `--only paths` and `--only
 - **settings:** the API shape, that secrets are never returned, a `router_timeout` round trip that is put back afterwards, the error cases, and, if a non-secret field is set by env, that a saved value overrides it and clearing falls back to it. Secrets are never changed.
 
 The token comes from `HYBRID_GATEWAY_TOKEN` in your shell, or is read from the proxy. Other flags: `--url`, `--db`, `--local-model`. A full run costs a fraction of a cent on Telnyx. Afterwards it deletes every request row added during the run, including any Hermes traffic in that window; pass `--keep` to leave them.
+
+## Licence
+
+[MIT](LICENSE).
