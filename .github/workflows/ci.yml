@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          python-version: "3.12"
+
+      - name: Lint
+        run: uvx ruff check --line-length 120 gateway.py test_gateway.py
+
+      - name: Type-check
+        run: >
+          uvx --with fastapi --with httpx --with tiktoken --with pathspec --with uvicorn --with keyring
+          mypy --python-version 3.12 --ignore-missing-imports gateway.py test_gateway.py
+
+      # The rest of test_gateway.py needs a running proxy, a local model server and Telnyx.
+      - name: Test paths
+        run: uv run test_gateway.py --only paths
+
+      - name: Test secrets
+        run: uv run test_gateway.py --only secrets

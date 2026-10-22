@@ -9,4 +9,5 @@ Local metering proxy for Hermes Agent → llama-server / Telnyx Inference. See R
 - Lint/type-check: `uvx ruff check --line-length 120 gateway.py test_gateway.py` and
   `uvx --with fastapi --with httpx --with tiktoken --with pathspec --with uvicorn --with keyring mypy --python-version 3.12 --ignore-missing-imports gateway.py test_gateway.py`.
 - E2E: `uv run test_gateway.py` against a running proxy (cleans up its own rows).
+- CI (`.github/workflows/ci.yml`): lint, mypy and the offline `paths` and `secrets` tests on every push to `main` and every PR; keep its commands in step with the ones above.
 - British English in UI copy and docs.
