@@ -1,0 +1,14 @@
+.env
+.env.*
+gateway.db
+gateway.db-*
+*.packed.txt
+__pycache__/
+.venv/
+TELNYX_KEY
+*.key
+settings.json
+!.env.example
+.mypy_cache/
+.ruff_cache/
+.hermes/

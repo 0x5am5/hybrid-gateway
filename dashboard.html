@@ -1,0 +1,937 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hybrid Gateway</title>
+<style>
+  :root {
+    --bg: #0a0c0f;
+    --surface: #12161b;
+    --surface-2: #181d24;
+    --line: #232a33;
+    --text: #eef1f4;
+    --muted: #8b95a3;
+    --faint: #5b6573;
+    --mac: #5ee08f;
+    --flash: #4cc3ff;
+    --kimi: #ffb547;
+    --danger: #ff6b6b;
+    --select: #ffe066;
+    color-scheme: dark;
+    /* 1920 CSS px wide => 20px root. Scales with the window so 1080p and 4K look identical. */
+    font-size: clamp(13px, calc(100vw / 96), 48px);
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+    display: grid;
+    grid-template-rows: auto auto auto auto 1fr auto;
+    gap: 1.1rem;
+    padding: 1.3rem 1.8rem 0.9rem;
+    overflow: hidden;
+  }
+  button, input { font: inherit; color: inherit; }
+
+  /* Header ---------------------------------------------------------------- */
+  header { display: flex; align-items: center; gap: 1.2rem; }
+  .wordmark { font-weight: 700; font-size: 1.25rem; letter-spacing: -0.01em; margin-right: auto; }
+  .wordmark span { color: var(--faint); font-weight: 500; }
+  .job { display: flex; align-items: center; gap: 0.6rem; }
+  .job input {
+    width: 20rem; padding: 0.55rem 0.9rem; border-radius: 0.6rem;
+    background: var(--surface); border: 1px solid var(--line); outline: none;
+  }
+  .job input:focus { border-color: var(--muted); }
+  .job input:disabled { color: var(--text); opacity: 1; border-color: var(--mac); }
+  .btn {
+    padding: 0.55rem 1rem; border-radius: 0.6rem; border: 1px solid var(--line);
+    background: var(--surface-2); cursor: pointer; white-space: nowrap;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--muted); }
+  .btn:disabled { opacity: 0.35; cursor: default; }
+  .btn.primary { background: var(--mac); border-color: var(--mac); color: #06210f; font-weight: 600; }
+  .btn.danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+  .btn:focus-visible, .job input:focus-visible, tr:focus-visible { outline: 2px solid var(--select); outline-offset: 2px; }
+  .sep { width: 1px; height: 1.8rem; background: var(--line); }
+  .live { display: inline-flex; align-items: center; gap: 0.45rem; color: var(--mac); font-weight: 600; font-size: 0.9rem; }
+  .dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.25; } }
+
+  /* Total + split bar ----------------------------------------------------- */
+  .hero { display: grid; grid-template-columns: auto 1fr; align-items: end; gap: 2.4rem; }
+  .total-label { color: var(--muted); font-size: 1rem; text-transform: uppercase; letter-spacing: 0.08em; }
+  .total { font-size: 4.6rem; font-weight: 700; letter-spacing: -0.03em; line-height: 1; }
+  .split { padding-bottom: 0.5rem; }
+  .split-head { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.95rem; margin-bottom: 0.55rem; }
+  .bar { display: flex; height: 1.1rem; border-radius: 0.55rem; overflow: hidden; background: var(--surface-2); gap: 2px; }
+  .bar div { transition: flex-grow 0.6s ease; min-width: 0; }
+  .legend { display: flex; gap: 1.6rem; margin-top: 0.55rem; font-size: 0.95rem; color: var(--muted); }
+  .legend b { color: var(--text); font-weight: 600; }
+  .sw { display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 0.2rem; margin-right: 0.4rem; vertical-align: 0.05rem; }
+
+  /* Columns --------------------------------------------------------------- */
+  .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.1rem; }
+  .col {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 1rem;
+    padding: 1.1rem 1.4rem 1.2rem; border-top: 0.3rem solid var(--accent);
+  }
+  .col h2 { margin: 0; font-size: 1.35rem; font-weight: 600; color: var(--accent); }
+  .col .cost { font-size: 3rem; font-weight: 700; letter-spacing: -0.02em; margin: 0.35rem 0 0.9rem; line-height: 1.1; }
+  .col .cost.free { color: var(--accent); font-size: 2.5rem; padding: 0.25rem 0; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; }
+  .stat .k { color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; }
+  .stat .v { font-size: 1.7rem; font-weight: 600; margin-top: 0.15rem; }
+  .bump { animation: bump 0.9s ease-out; }
+  @keyframes bump { from { color: var(--select); } }
+
+  /* Auto-routing strip ---------------------------------------------------- */
+  .router {
+    display: grid; grid-template-columns: auto 18rem auto 1fr; align-items: center; gap: 1.4rem;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 1rem; padding: 0.85rem 1.4rem;
+  }
+  .router .k { color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; }
+  .router .count { font-size: 1.35rem; font-weight: 600; margin-left: 0.6rem; text-transform: none; letter-spacing: 0; color: var(--text); }
+  .router .bar { height: 0.8rem; }
+  .router .legend { margin: 0; }
+  .router .meta { justify-self: end; color: var(--muted); font-size: 0.95rem; text-align: right; }
+  .router .meta b { color: var(--text); font-weight: 600; }
+  .router.idle { opacity: 0.55; }
+  .router-pill { color: var(--muted); font-size: 0.8rem; margin-right: 0.4rem; text-transform: uppercase; letter-spacing: 0.06em; }
+
+  /* Table ----------------------------------------------------------------- */
+  .table-wrap { min-height: 0; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 1rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 1.05rem; }
+  thead th {
+    position: sticky; top: 0; background: var(--surface); z-index: 1;
+    text-align: left; color: var(--muted); font-weight: 500; font-size: 0.85rem;
+    text-transform: uppercase; letter-spacing: 0.06em; padding: 0.8rem 1rem; border-bottom: 1px solid var(--line);
+  }
+  td { padding: 0.7rem 1rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th.n, td.n { text-align: right; }
+  tbody tr { cursor: pointer; transition: background 0.15s, opacity 0.2s; }
+  tbody tr:hover { background: var(--surface-2); }
+  tbody.has-sel tr { opacity: 0.35; }
+  tbody.has-sel tr.sel { opacity: 1; }
+  tr.sel td { background: rgba(255, 224, 102, 0.1); font-size: 1.25rem; font-weight: 600; }
+  tr.sel td:first-child { box-shadow: inset 0.3rem 0 0 var(--select); }
+  .label { font-weight: 600; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; }
+  .label .dot { display: inline-block; color: var(--mac); margin-left: 0.5rem; width: 0.5rem; height: 0.5rem; vertical-align: 0.15rem; }
+  .untagged { color: var(--muted); font-style: italic; font-weight: 400; }
+  .pill { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 99rem; font-size: 0.85rem; font-weight: 600; border: 1px solid currentColor; }
+  .est { color: var(--faint); font-size: 0.8rem; margin-left: 0.3rem; }
+  .muted { color: var(--muted); }
+  .empty { text-align: center; color: var(--muted); padding: 3rem 1rem; cursor: default; }
+  .empty:hover { background: none; }
+
+  footer { display: flex; justify-content: space-between; color: var(--faint); font-size: 0.85rem; }
+  footer .off { color: var(--danger); }
+
+  /* Settings drawer ------------------------------------------------------- */
+  .btn.has-draft::after {
+    content: ""; display: inline-block; width: 0.45rem; height: 0.45rem; border-radius: 50%;
+    background: var(--select); margin-left: 0.45rem; vertical-align: 0.1rem;
+  }
+  .drawer {
+    position: fixed; inset: 0 0 0 auto; margin: 0; padding: 0; width: min(100%, 36rem); height: 100%;
+    max-width: none; max-height: none; border: none; border-left: 1px solid var(--line);
+    background: var(--surface); color: var(--text);
+  }
+  .drawer[open] { display: flex; flex-direction: column; animation: slide-in 0.22s ease-out; }
+  .drawer::backdrop { background: rgba(5, 7, 9, 0.62); }
+  @keyframes slide-in { from { transform: translateX(2rem); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .drawer[open] { animation: none; } }
+  .drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 1.1rem 1.4rem; border-bottom: 1px solid var(--line); }
+  .drawer-head h2 { margin: 0; font-size: 1.35rem; font-weight: 600; outline: none; }
+  .icon-btn { width: 2.3rem; height: 2.3rem; padding: 0; font-size: 1.3rem; line-height: 1; }
+  .drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 1.4rem 1rem; }
+  .drawer-foot { display: flex; align-items: center; gap: 0.6rem; padding: 0.9rem 1.4rem; border-top: 1px solid var(--line); }
+  .drawer-foot .msg { margin-right: auto; color: var(--muted); font-size: 0.9rem; }
+  .msg.ok { color: var(--mac); }
+  .msg.err { color: var(--danger); }
+  .intro { color: var(--muted); font-size: 0.9rem; margin: 1rem 0 0; }
+  .set-sec { padding: 1.3rem 0; border-bottom: 1px solid var(--line); }
+  .set-sec:last-child { border-bottom: none; }
+  .sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+  .sec-head h3 { margin: 0; font-size: 0.85rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .conn { font-size: 0.85rem; color: var(--faint); text-align: right; }
+  .conn.ok { color: var(--mac); }
+  .conn.err { color: var(--danger); }
+  .field { margin-top: 1rem; }
+  .field-top { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
+  .field-top label { font-weight: 600; font-size: 0.95rem; }
+  .badge {
+    font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 0.08rem 0.45rem; border-radius: 99rem; border: 1px solid currentColor; color: var(--faint);
+  }
+  .badge.env { color: var(--kimi); }
+  .badge.app { color: var(--flash); }
+  .field-row { display: flex; align-items: center; gap: 0.5rem; }
+  .input {
+    flex: 1; min-width: 0; width: 100%; padding: 0.5rem 0.75rem; border-radius: 0.6rem;
+    background: var(--bg); border: 1px solid var(--line); outline: none;
+  }
+  .input:focus { border-color: var(--muted); }
+  .input:disabled { color: var(--muted); cursor: not-allowed; }
+  .input.dirty { border-color: var(--select); }
+  .input[aria-invalid="true"] { border-color: var(--danger); }
+  .input::placeholder { color: var(--faint); }
+  .unit { color: var(--muted); font-size: 0.9rem; min-width: 3.6rem; }
+  .help { margin-top: 0.3rem; font-size: 0.85rem; color: var(--muted); }
+  .note { margin-top: 0.3rem; font-size: 0.85rem; color: var(--kimi); }
+  .err-line { margin-top: 0.3rem; font-size: 0.85rem; color: var(--danger); }
+  .mono, .help code, .note code, .explain code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.9em; }
+  .btn.sm { padding: 0.45rem 0.8rem; font-size: 0.9rem; }
+  .btn.solid-danger { background: var(--danger); border-color: var(--danger); color: #2a0606; font-weight: 600; }
+  .drawer .input:focus-visible { outline: 2px solid var(--select); outline-offset: 1px; }
+  .drawer .input[aria-invalid="true"]:focus-visible { outline-color: var(--danger); }
+  .tiers { display: grid; gap: 0.9rem; margin-top: 1rem; }
+  .tier { background: var(--surface-2); border: 1px solid var(--line); border-top: 0.2rem solid var(--accent); border-radius: 0.8rem; padding: 0.2rem 1rem 0.9rem; }
+  .tier-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-top: 0.8rem; }
+  .tier-head h4 { margin: 0; font-size: 1.05rem; font-weight: 600; color: var(--accent); }
+  .tier-head .mono { color: var(--faint); font-size: 0.8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rates { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 0.6rem; }
+  .explain { color: var(--muted); font-size: 0.95rem; line-height: 1.5; margin: 0.8rem 0 0; }
+  .explain code { color: var(--text); }
+  .token-actions { display: flex; gap: 0.5rem; margin-top: 0.8rem; flex-wrap: wrap; }
+  .reveal {
+    display: flex; align-items: center; gap: 0.6rem; margin-top: 0.8rem; padding: 0.55rem 0.55rem 0.55rem 0.8rem;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 0.6rem;
+  }
+  .reveal code { flex: 1; min-width: 0; word-break: break-all; font-size: 0.9rem; user-select: all; }
+  .confirm { margin-top: 0.8rem; padding: 0.8rem 0.9rem; border: 1px solid var(--danger); border-radius: 0.6rem; background: rgba(255, 107, 107, 0.07); }
+  .confirm p { margin: 0; font-size: 0.95rem; line-height: 1.45; }
+  .confirm .token-actions { margin-top: 0.7rem; }
+  .startup { display: grid; grid-template-columns: auto 1fr; gap: 0.45rem 1.2rem; margin: 1rem 0 0; font-size: 0.9rem; }
+  .startup dt { color: var(--muted); }
+  .startup dd { margin: 0; word-break: break-all; }
+  @media (max-width: 40rem) {
+    .drawer { width: 100%; border-left: none; }
+    .rates { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="wordmark">Hybrid Gateway <span>· where the work ran</span></div>
+  <span id="live" class="live" hidden><span class="dot"></span><span id="live-text"></span></span>
+  <form class="job" id="job-form" autocomplete="off">
+    <input id="job-label" maxlength="80" placeholder="Job label, e.g. refactor auth" aria-label="Job label">
+    <button class="btn primary" id="start" type="submit">Start job</button>
+    <button class="btn" id="end" type="button" disabled>End job</button>
+  </form>
+  <div class="sep"></div>
+  <a class="btn" href="/api/export.csv" download style="text-decoration:none">Export CSV</a>
+  <button class="btn danger" id="reset" type="button">Reset day</button>
+  <button class="btn" id="settings-open" type="button" aria-haspopup="dialog" aria-controls="settings">Settings</button>
+</header>
+
+<section class="hero">
+  <div>
+    <div class="total-label">Total cost</div>
+    <div class="total" id="total">$0.00</div>
+  </div>
+  <div class="split">
+    <div class="split-head"><span>Share of tokens processed</span><span id="split-total"></span></div>
+    <div class="bar" id="bar"></div>
+    <div class="legend" id="legend"></div>
+  </div>
+</section>
+
+<section class="cols" id="cols"></section>
+
+<section class="router idle" id="router">
+  <div class="k">Auto-routed<span class="count" id="router-count">0</span></div>
+  <div class="bar" id="router-bar"></div>
+  <div class="legend" id="router-legend"></div>
+  <div class="meta" id="router-meta">No auto-routed requests yet</div>
+</section>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Job</th><th>Ran on</th><th>Model</th>
+        <th class="n">Requests</th><th class="n">Tokens in</th><th class="n">Tokens out</th>
+        <th class="n">Time</th><th class="n">Cost</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+
+<footer>
+  <span id="verified">Prices verified —</span>
+  <span id="status">Connecting…</span>
+</footer>
+
+<dialog class="drawer" id="settings" aria-labelledby="settings-title">
+  <div class="drawer-head">
+    <h2 id="settings-title" tabindex="-1" autofocus>Settings</h2>
+    <button class="btn icon-btn" id="settings-close" type="button" aria-label="Close settings">×</button>
+  </div>
+  <form class="drawer-body" id="settings-form" novalidate autocomplete="off">
+    <p class="intro">Loading settings…</p>
+  </form>
+  <datalist id="models-local"></datalist>
+  <datalist id="models-remote"></datalist>
+  <div class="drawer-foot">
+    <span class="msg" id="settings-msg" role="status" aria-live="polite"></span>
+    <button class="btn" id="settings-discard" type="button" hidden>Discard</button>
+    <button class="btn primary" id="settings-save" type="submit" form="settings-form" disabled>Save</button>
+  </div>
+</dialog>
+
+<script>
+const ACCENTS = ["var(--mac)", "var(--flash)", "var(--kimi)"];
+const $ = (id) => document.getElementById(id);
+const nf = new Intl.NumberFormat("en-GB");
+let selected = (() => { try { return localStorage.getItem("gateway-sel"); } catch { return null; } })();
+let last = null;
+let busy = false;
+
+const usd = (v, dp) => "$" + v.toLocaleString("en-GB", { minimumFractionDigits: dp, maximumFractionDigits: dp });
+const compact = (n) => n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e5 ? (n / 1e3).toFixed(1) + "k" : nf.format(n);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function dur(ms) {
+  if (ms < 1000) return ms + " ms";
+  const s = ms / 1000;
+  if (s < 60) return s.toFixed(1) + " s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(Math.floor(s % 60)).padStart(2, "0")}s`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
+function setText(el, text) {
+  if (el.textContent !== text) {
+    const had = el.textContent !== "";
+    el.textContent = text;
+    if (had) { el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump"); }
+  }
+}
+
+function renderColumns(cols) {
+  const root = $("cols");
+  if (root.children.length !== cols.length) {
+    root.innerHTML = cols.map((c, i) => `
+      <div class="col" style="--accent:${ACCENTS[i] || "var(--muted)"}" data-key="${esc(c.key)}">
+        <h2>${esc(c.label)}</h2>
+        <div class="cost"></div>
+        <div class="stats">
+          <div class="stat"><div class="k">Jobs</div><div class="v" data-f="jobs"></div></div>
+          <div class="stat"><div class="k">Requests</div><div class="v" data-f="requests"></div></div>
+          <div class="stat"><div class="k">Tokens in</div><div class="v" data-f="tokens_in"></div></div>
+          <div class="stat"><div class="k">Tokens out</div><div class="v" data-f="tokens_out"></div></div>
+        </div>
+      </div>`).join("");
+  }
+  cols.forEach((c, i) => {
+    const el = root.children[i];
+    const title = el.querySelector("h2");
+    if (title.textContent !== c.label) title.textContent = c.label;
+    const cost = el.querySelector(".cost");
+    cost.classList.toggle("free", c.cost === null);
+    setText(cost, c.cost === null ? "on the Mac" : usd(c.cost, 2));
+    setText(el.querySelector('[data-f="jobs"]'), nf.format(c.jobs));
+    setText(el.querySelector('[data-f="requests"]'), nf.format(c.requests));
+    setText(el.querySelector('[data-f="tokens_in"]'), compact(c.tokens_in));
+    setText(el.querySelector('[data-f="tokens_out"]'), compact(c.tokens_out));
+  });
+}
+
+function renderSplit(cols) {
+  const sums = cols.map((c) => c.tokens_in + c.tokens_out);
+  const total = sums.reduce((a, b) => a + b, 0);
+  $("bar").innerHTML = total
+    ? cols.map((c, i) => `<div style="flex-grow:${sums[i]};background:${ACCENTS[i]}"></div>`).join("")
+    : "";
+  $("legend").innerHTML = cols.map((c, i) =>
+    `<span><i class="sw" style="background:${ACCENTS[i]}"></i>${esc(c.label)} <b>${total ? Math.round(sums[i] / total * 100) : 0}%</b></span>`).join("");
+  $("split-total").textContent = total ? compact(total) + " tokens" : "";
+}
+
+function renderRows(jobs, cols) {
+  const tbody = $("rows");
+  const labels = Object.fromEntries(cols.map((c) => [String(c.key).toLowerCase(), c.label]));
+  const colour = Object.fromEntries(cols.map((c, i) => [String(c.key).toLowerCase(), ACCENTS[i]]));
+  if (!jobs.length) {
+    tbody.className = "";
+    tbody.innerHTML = `<tr><td class="empty" colspan="8">No requests yet. Start a job, then run Hermes.</td></tr>`;
+    return;
+  }
+  if (selected && !jobs.some((j) => j.id === selected)) selected = null;
+  tbody.className = selected ? "has-sel" : "";
+  tbody.innerHTML = jobs.map((j) => {
+    const local = j.backend === "local";
+    const key = local ? "local" : String(j.model || "").toLowerCase();
+    const model = (j.purpose === "router" ? '<span class="router-pill">Router</span>' : "")
+      + (local ? esc(j.model || "local model") : esc(labels[key] || j.model || "unknown"));
+    const est = j.estimated ? `<span class="est" title="Estimated with tiktoken">est.</span>` : "";
+    const approx = j.estimated ? "≈" : "";
+    const cost = local ? `<span style="color:var(--mac)">on the Mac</span>` : j.cost === null ? `<span class="muted">no price</span>` : usd(j.cost, 4);
+    const label = j.label === "untagged" ? `<span class="untagged">untagged</span>` : esc(j.label);
+    return `<tr tabindex="0" data-id="${esc(j.id)}" class="${j.id === selected ? "sel" : ""}">
+      <td class="label">${label}${j.open ? '<span class="dot" title="Job open"></span>' : ""}</td>
+      <td><span class="pill" style="color:${colour[key] || "var(--muted)"}">${local ? "Mac" : "Telnyx"}</span></td>
+      <td>${model}</td>
+      <td class="n">${nf.format(j.requests)}</td>
+      <td class="n">${approx}${nf.format(j.tokens_in)}${est}</td>
+      <td class="n">${approx}${nf.format(j.tokens_out)}</td>
+      <td class="n">${dur(j.wall_ms)}</td>
+      <td class="n">${cost}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderRouter(r, cols, redactions) {
+  if (!r) return;
+  const counts = [r.routed.mac, r.routed.flash, r.routed.k3];
+  const total = counts.reduce((a, b) => a + b, 0);
+  $("router").classList.toggle("idle", total === 0);
+  setText($("router-count"), nf.format(total));
+  $("router-bar").innerHTML = total
+    ? counts.map((n, i) => `<div style="flex-grow:${n};background:${ACCENTS[i]}"></div>`).join("")
+    : "";
+  $("router-legend").innerHTML = cols.slice(0, 3).map((c, i) =>
+    `<span><i class="sw" style="background:${ACCENTS[i]}"></i>${esc(c.label)} <b>${total ? Math.round(counts[i] / total * 100) : 0}%</b></span>`).join("");
+  const avg = r.avg_ms === null ? "" : ` · avg <b>${dur(r.avg_ms)}</b>`;
+  const fb = r.fallbacks ? ` · <b>${nf.format(r.fallbacks)}</b> fallbacks` : "";
+  const red = redactions && redactions.credentials
+    ? ` · <b>${nf.format(redactions.credentials)}</b> credentials redacted from <b>${nf.format(redactions.requests)}</b> cloud requests`
+    : "";
+  $("router-meta").innerHTML = total || r.decisions
+    ? `Router <b>${esc(r.model)}</b> on the Mac · <b>${nf.format(r.decisions)}</b> decisions${avg}${fb}${red}`
+    : "No auto-routed requests yet" + red;
+}
+
+function renderJob(open) {
+  const input = $("job-label");
+  $("start").disabled = !!open;
+  $("end").disabled = !open;
+  input.disabled = !!open;
+  if (open) input.value = open.label;
+  else if (input.dataset.wasOpen) input.value = "";
+  input.dataset.wasOpen = open ? "1" : "";
+  $("live").hidden = !open;
+  if (open) $("live-text").textContent = "Job running · " + dur(Date.now() - Date.parse(open.started_at));
+}
+
+function render(data) {
+  last = data;
+  setText($("total"), usd(data.total_cost, 2));
+  renderColumns(data.columns);
+  renderSplit(data.columns);
+  renderRouter(data.router, data.columns, data.redactions);
+  renderRows(data.jobs, data.columns);
+  renderJob(data.open_job);
+  $("verified").textContent = `Prices verified ${data.prices_verified || "—"} · USD per 1M tokens · Telnyx Inference`;
+}
+
+async function refresh() {
+  if (busy) return;
+  busy = true;
+  try {
+    const res = await fetch("/api/summary", { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status);
+    render(await res.json());
+    $("status").className = "";
+    $("status").textContent = "Live · updated " + new Date().toLocaleTimeString("en-GB");
+  } catch {
+    $("status").className = "off";
+    $("status").textContent = "Proxy offline";
+  } finally {
+    busy = false;
+  }
+}
+
+async function post(path, body = {}) {
+  const res = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+$("job-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const label = $("job-label").value.trim();
+  if (!label) { $("job-label").focus(); return; }
+  try { await post("/api/jobs/start", { label }); } catch (err) { console.error(err); }
+  refresh();
+});
+$("end").addEventListener("click", async () => {
+  try { await post("/api/jobs/end"); } catch (err) { console.error(err); }
+  refresh();
+});
+$("reset").addEventListener("click", async () => {
+  if (!confirm("Reset day? This deletes every logged request and job.")) return;
+  try { await post("/api/reset"); } catch (err) { console.error(err); }
+  selected = null;
+  refresh();
+});
+
+function toggleRow(tr) {
+  selected = selected === tr.dataset.id ? null : tr.dataset.id;
+  try { selected ? localStorage.setItem("gateway-sel", selected) : localStorage.removeItem("gateway-sel"); } catch {}
+  if (last) renderRows(last.jobs, last.columns);
+}
+$("rows").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-id]"); if (tr) toggleRow(tr); });
+$("rows").addEventListener("keydown", (e) => {
+  const tr = e.target.closest("tr[data-id]");
+  if (tr && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggleRow(tr); }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && selected && !$("settings").open) { selected = null; try { localStorage.removeItem("gateway-sel"); } catch {} if (last) renderRows(last.jobs, last.columns); }
+});
+
+/* Settings drawer --------------------------------------------------------- */
+const TIERS = [["flash", "var(--flash)"], ["k3", "var(--kimi)"]];
+const RATES = [["input", "Input"], ["cached", "Cached"], ["output", "Output"]];
+const SOURCES = { env: "Env", app: "App", default: "Default" };
+const MODEL_LISTS = { local_model: "local", router_model: "local", flash_model: "remote", k3_model: "remote" };
+const LIMITS = { router_timeout: [0.5, 120], read_timeout: [10, 3600], local_context: [1000, 10000000], flash_context: [1000, 10000000] };
+const NUMERIC = new Set(["seconds", "tokens"]);
+let conf = null;            // last /api/settings response; the form is only rebuilt from it when there is no draft
+const clears = new Set();   // secret keys marked for removal on save
+const conn = {};            // model list status per backend, kept across re-renders
+
+const fieldOf = (key) => conf.fields.find((f) => f.key === key);
+const errBox = (path) => $("set-" + path.replace(".", "-") + "-err");
+const envFile = () => String(conf.startup.env_file || ".env").split("/").pop();
+/** Where a field's env value lives: the env file's name, or "your shell". */
+const envWhere = (f) => f.env_origin === "file" ? envFile() : "your shell";
+
+/** The note under a field: what a saved value overrides, or (pending a Clear) what the field falls back to. */
+function noteHtml(f, clearing = false) {
+  if (clearing) return f.env_set ? `Falls back to <code>${esc(f.env_set_by)}</code> from ${esc(envWhere(f))}` : "Not set";
+  return f.source === "app" && f.env_set_by ? `Overrides <code>${esc(f.env_set_by)}</code> from ${esc(envWhere(f))}` : "";
+}
+
+function fieldHtml(f) {
+  const id = "set-" + f.key;
+  const secret = f.type === "secret";
+  const noKeychain = secret && !conf.keychain;
+  const off = noKeychain ? " disabled" : "";
+  let control;
+  if (secret) {
+    const ph = noKeychain ? "Keychain unavailable" : f.source === "app" ? "Saved in Keychain"
+      : f.source === "env" ? `From ${f.env_set_by}` : "Not set";
+    control = `<input class="input mono" type="password" id="${id}" name="${esc(f.key)}" placeholder="${esc(ph)}"
+        autocomplete="new-password" spellcheck="false" aria-describedby="${id}-help ${id}-note ${id}-err"${off}>`
+      + (f.source === "app" && conf.keychain
+        ? `<button class="btn sm" type="button" data-clear="${esc(f.key)}" aria-pressed="false">Clear</button>` : "");
+  } else {
+    const num = NUMERIC.has(f.type);
+    const lim = LIMITS[f.key];
+    const ph = f.env_value !== null && f.env_value !== undefined ? `From ${f.env_set_by}: ${f.env_value}`
+      : f.default === null || f.default === undefined ? "Not set" : "Default: " + f.default;
+    const kind = num ? `type="number" inputmode="decimal" step="any" required${lim ? ` min="${lim[0]}" max="${lim[1]}"` : ""}`
+      : f.type === "url" ? `type="url" spellcheck="false"`
+      : `type="text" spellcheck="false" maxlength="200"${f.type === "model" ? ` list="models-${MODEL_LISTS[f.key] || f.group}"` : ""}`;
+    const value = esc(f.value ?? "");
+    control = `<input class="input${num ? "" : " mono"}" id="${id}" name="${esc(f.key)}" ${kind} value="${value}" data-orig="${value}"
+        placeholder="${esc(ph)}" aria-describedby="${id}-help ${id}-note ${id}-err"${off}>`
+      + (num ? `<span class="unit">${esc(f.type)}</span>` : "");
+  }
+  const [cls, text] = secret && !f.set ? ["none", "Not set"] : [f.source, SOURCES[f.source] || f.source];
+  const help = f.source === "env" ? `Set by <code>${esc(f.env_set_by)}</code> in ${esc(envWhere(f))}. ${esc(f.help)}`
+    : noKeychain ? `The Keychain isn’t available, so set this with <code>${esc(f.env)}</code> in your shell or ${esc(envFile())}.`
+    : esc(f.help);
+  const note = noteHtml(f);
+  return `<div class="field" id="field-${esc(f.key)}">
+    <div class="field-top"><label for="${id}">${esc(f.label)}</label>
+      <span class="badge ${esc(cls)}" title="Environment variable: ${esc(f.env)}">${esc(text)}</span></div>
+    <div class="field-row">${control}</div>
+    <div class="help" id="${id}-help">${help}</div>
+    <div class="note" id="${id}-note"${note ? "" : " hidden"}>${note}</div>
+    <div class="err-line" id="${id}-err" hidden></div>
+  </div>`;
+}
+
+function connHtml(backend) {
+  const c = conn[backend] || { cls: "", text: "Checking models…" };
+  return `<span class="conn ${c.cls}" id="conn-${backend}" role="status">${esc(c.text)}</span>`;
+}
+
+function rateHtml(path, label, value, extra) {
+  const id = "set-" + path.replace(".", "-");
+  return `<div class="field">
+    <div class="field-top"><label for="${id}">${label}</label></div>
+    <input class="input" id="${id}" data-price="${path}" value="${esc(value)}" data-orig="${esc(value)}" required
+      aria-describedby="${id}-err" ${extra}>
+    <div class="err-line" id="${id}-err" hidden></div>
+  </div>`;
+}
+
+function renderSettings() {
+  const group = (g) => conf.fields.filter((f) => f.group === g && f.key !== "gateway_token").map(fieldHtml).join("");
+  const tok = fieldOf("gateway_token");
+  const p = conf.prices;
+  const s = conf.startup;
+  $("settings-form").innerHTML = `
+    <p class="intro">Values saved here override environment variables and ${esc(envFile())}. Leave a field empty to fall back to them, or to the default.</p>
+    <section class="set-sec" aria-labelledby="sec-local">
+      <div class="sec-head"><h3 id="sec-local">Mac (local server)</h3>${connHtml("local")}</div>
+      ${group("local")}
+    </section>
+    <section class="set-sec" aria-labelledby="sec-remote">
+      <div class="sec-head"><h3 id="sec-remote">Telnyx (remote)</h3>${connHtml("remote")}</div>
+      ${group("remote")}
+    </section>
+    <section class="set-sec" aria-labelledby="sec-prices">
+      <div class="sec-head"><h3 id="sec-prices">Prices</h3><span class="conn">USD per 1M tokens</span></div>
+      <div class="field">
+        <div class="field-top"><label for="set-verified">Verified on</label></div>
+        <input class="input" type="date" id="set-verified" data-price="verified" value="${esc(p.verified)}" data-orig="${esc(p.verified)}"
+          required aria-describedby="set-verified-help set-verified-err">
+        <div class="help" id="set-verified-help">The day you last checked these rates against Telnyx’s pricing page.</div>
+        <div class="err-line" id="set-verified-err" hidden></div>
+      </div>
+      <div class="tiers">${TIERS.map(([t, accent]) => `
+        <div class="tier" style="--accent:${accent}">
+          <div class="tier-head"><h4>${esc(p[t].label)}</h4><span class="mono" title="${esc(p[t].model)}">${esc(p[t].model)}</span></div>
+          ${rateHtml(t + ".label", "Label", p[t].label, `type="text" maxlength="40"`)}
+          <div class="rates">${RATES.map(([r, name]) =>
+            rateHtml(`${t}.${r}`, name, p[t][r], `type="number" inputmode="decimal" step="any" min="0" max="10000"`)).join("")}</div>
+        </div>`).join("")}
+      </div>
+    </section>
+    <section class="set-sec" aria-labelledby="sec-token">
+      <div class="sec-head"><h3 id="sec-token">Hybrid Gateway token</h3></div>
+      <p class="explain">The token is a shared password between Hermes and Hybrid Gateway, separate from your Telnyx key.
+        Hybrid Gateway holds the real Telnyx key, so the token stops anything else on this Mac, a web page included, from spending on your account through it.
+        Hermes reads it from <code>HYBRID_GATEWAY_TOKEN</code> in <code>~/.hermes/.env</code>.</p>
+      ${tok ? fieldHtml(tok) : ""}
+      <div class="token-actions">
+        <button class="btn sm" type="button" id="token-reveal" aria-expanded="false" aria-controls="token-box">Reveal</button>
+        <button class="btn sm danger" type="button" id="token-rotate"${!tok || !conf.keychain ? " disabled" : ""}>${tok && tok.set ? "Rotate" : "Create token"}</button>
+      </div>
+      <div class="reveal" id="token-box" hidden><code id="token-value"></code>
+        <button class="btn sm" type="button" id="token-copy">Copy</button></div>
+      <div class="confirm" id="token-confirm" hidden>
+        <p>Rotate the token? Hermes will be refused until you put the new value in <code>HYBRID_GATEWAY_TOKEN</code> in <code>~/.hermes/.env</code>.</p>
+        <div class="token-actions">
+          <button class="btn sm solid-danger" type="button" id="token-rotate-yes">Rotate token</button>
+          <button class="btn sm" type="button" id="token-rotate-no">Cancel</button>
+        </div>
+      </div>
+      <div class="help" id="token-note" role="status"></div>
+    </section>
+    <section class="set-sec" aria-labelledby="sec-proxy">
+      <div class="sec-head"><h3 id="sec-proxy">Proxy</h3></div>
+      ${group("proxy")}
+    </section>
+    <section class="set-sec" aria-labelledby="sec-startup">
+      <div class="sec-head"><h3 id="sec-startup">Startup</h3><span class="conn">Read-only</span></div>
+      <dl class="startup">
+        <dt>Port</dt><dd class="mono">${esc(s.port)}</dd>
+        <dt>Database</dt><dd class="mono">${esc(s.db)}</dd>
+        <dt>Prices</dt><dd class="mono">${esc(s.prices)}</dd>
+        <dt>Settings</dt><dd class="mono">${esc(s.settings)}</dd>
+        <dt>Env file</dt><dd><span class="mono">${esc(s.env_file)}</span> <span class="muted">· ${s.env_file_loaded ? "loaded" : "not found"}</span></dd>
+        <dt>Keychain</dt><dd class="mono">${esc(s.keychain_service)}</dd>
+      </dl>
+      <p class="help">Read once at startup from your shell or ${esc(envFile())}; your shell wins. Change them with <code>HYBRID_GATEWAY_PORT</code>,
+        <code>HYBRID_GATEWAY_DB</code>, <code>HYBRID_GATEWAY_PRICES</code>, <code>HYBRID_GATEWAY_SETTINGS</code> and
+        <code>HYBRID_GATEWAY_KEYCHAIN_SERVICE</code>, or point <code>HYBRID_GATEWAY_ENV_FILE</code> at another file from your shell,
+        then restart Hybrid Gateway. Files sit next to <code>gateway.py</code> by default, and relative paths start from there.</p>
+    </section>`;
+  clears.clear();
+  updateDraft();
+}
+
+/** Builds the POST /api/settings body from fields that differ from the last saved state. */
+function draft() {
+  const form = $("settings-form");
+  const body = {};
+  const values = {};
+  for (const el of form.querySelectorAll("input[name]")) {
+    if (el.disabled) continue;
+    const f = fieldOf(el.name);
+    if (f.type === "secret") { if (el.value) values[f.key] = el.value; continue; }
+    if (el.value === el.dataset.orig) continue;
+    const v = el.value.trim();
+    values[f.key] = v === "" ? null : NUMERIC.has(f.type) ? Number(v) : v;
+  }
+  if (Object.keys(values).length) body.values = values;
+  if (clears.size) body.clear = [...clears];
+  const prices = {};
+  const verified = $("set-verified");
+  if (verified && verified.value !== verified.dataset.orig) prices.verified = verified.value;
+  for (const [t] of TIERS) {
+    const els = [...form.querySelectorAll(`[data-price^="${t}."]`)];
+    if (!els.some((el) => el.value !== el.dataset.orig)) continue;
+    prices[t] = Object.fromEntries(els.map((el) => {
+      const k = el.dataset.price.split(".")[1];
+      return [k, k === "label" ? el.value.trim() : Number(el.value)];
+    }));
+  }
+  if (Object.keys(prices).length) body.prices = prices;
+  return body;
+}
+
+function setMsg(text, cls = "") {
+  $("settings-msg").className = "msg " + cls;
+  $("settings-msg").textContent = text;
+}
+
+function updateDraft() {
+  const form = $("settings-form");
+  for (const el of form.querySelectorAll("input[data-orig]")) el.classList.toggle("dirty", el.value !== el.dataset.orig);
+  for (const el of form.querySelectorAll('input[type="password"]')) el.classList.toggle("dirty", !!el.value || clears.has(el.name));
+  const dirty = !!conf && Object.keys(draft()).length > 0;
+  $("settings-save").disabled = !dirty;
+  $("settings-discard").hidden = !dirty;
+  $("settings-open").classList.toggle("has-draft", dirty);
+  if (dirty) setMsg("Unsaved changes");
+  else if (!$("settings-msg").classList.contains("ok")) setMsg("");
+  return dirty;
+}
+
+function clearError(el) {
+  const path = el.name || el.dataset.price;
+  const box = path && errBox(path);
+  if (box) box.hidden = true;
+  el.removeAttribute("aria-invalid");
+}
+
+function showError(path, text) {
+  const box = errBox(path);
+  const input = $("set-" + path.replace(".", "-"));
+  if (!box || !input) return false;
+  box.textContent = text;
+  box.hidden = false;
+  input.setAttribute("aria-invalid", "true");
+  return true;
+}
+
+/** Finds the field a server error is about, from a pydantic loc or the message text. */
+function errorPath(loc, text) {
+  if (Array.isArray(loc)) {
+    const parts = loc.map(String);
+    const pi = parts.indexOf("prices");
+    if (pi >= 0 && parts[pi + 1]) return parts[pi + 1] === "verified" ? "verified" : parts.slice(pi + 1, pi + 3).join(".");
+    const vi = parts.indexOf("values");
+    if (vi >= 0 && parts[vi + 1]) return parts[vi + 1];
+  }
+  const keys = conf.fields.map((f) => f.key).sort((a, b) => b.length - a.length);
+  return keys.find((k) => new RegExp(`\\b${k}\\b`).test(text || "")) || null;
+}
+
+/** Maps the API's error field ("router_timeout", "prices.verified", "prices.k3", "prices.k3.label") to a form path. */
+function fieldPath(field) {
+  if (!field) return null;
+  const path = field.replace(/^prices\./, "");
+  return TIERS.some(([t]) => t === path) ? path + ".label" : path;
+}
+
+function showErrors(status, data) {
+  const items = [];
+  if (Array.isArray(data?.detail)) {
+    for (const d of data.detail) items.push([errorPath(d.loc, d.msg), String(d.msg).replace(/^Value error, /, "")]);
+  }
+  else if (typeof data?.detail === "string") items.push([errorPath(null, data.detail), data.detail]);
+  if (typeof data?.error === "string") items.push([fieldPath(data.field) || errorPath(null, data.error), data.error]);
+  const loose = items.filter(([path, text]) => !(path && showError(path, text))).map(([, text]) => text);
+  const placed = items.length - loose.length;
+  setMsg(loose.length ? loose.join(" · ")
+    : placed ? `Not saved · fix the field${placed === 1 ? "" : "s"} marked in red` : `Not saved (HTTP ${status})`, "err");
+  const first = $("settings-form").querySelector('[aria-invalid="true"]');
+  if (first) first.focus();
+}
+
+async function loadSettings() {
+  try {
+    const res = await fetch("/api/settings", { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status);
+    conf = await res.json();
+    renderSettings();
+  } catch {
+    if (!conf) $("settings-form").innerHTML = `<p class="intro">Couldn’t load settings. Is the proxy running?</p>`;
+    setMsg("Couldn’t load settings", "err");
+  }
+}
+
+async function loadModels() {
+  await Promise.all(["local", "remote"].map(async (backend) => {
+    try {
+      const res = await fetch("/api/settings/models?backend=" + backend, { cache: "no-store" });
+      if (!res.ok) throw new Error(res.status);
+      const d = await res.json();
+      $("models-" + backend).innerHTML = d.models.map((m) => `<option value="${esc(m)}"></option>`).join("");
+      const n = d.models.length;
+      conn[backend] = d.ok
+        ? { cls: "ok", text: `Connected · ${nf.format(n)} model${n === 1 ? "" : "s"}` }
+        : { cls: "err", text: "Not connected · " + (d.error || "unknown error") };
+    } catch {
+      conn[backend] = { cls: "err", text: "Couldn’t check models" };
+    }
+    const line = $("conn-" + backend);
+    if (line) { line.className = "conn " + conn[backend].cls; line.textContent = conn[backend].text; }
+  }));
+}
+
+async function openSettings() {
+  $("settings").showModal();
+  if (!conf || !updateDraft()) await loadSettings();
+  loadModels();
+}
+
+async function saveSettings(e) {
+  e.preventDefault();
+  const body = draft();
+  if (!Object.keys(body).length) return;
+  const form = $("settings-form");
+  form.querySelectorAll(".err-line").forEach((b) => { b.hidden = true; });
+  form.querySelectorAll("[aria-invalid]").forEach((el) => el.removeAttribute("aria-invalid"));
+  const invalid = [...form.querySelectorAll("input.dirty:not([type=password])")].filter((el) => !el.checkValidity());
+  if (invalid.length) {
+    invalid.forEach((el) => showError(el.name || el.dataset.price, el.validationMessage));
+    setMsg("Not saved · fix the fields marked in red", "err");
+    invalid[0].focus();
+    return;
+  }
+  $("settings-save").disabled = true;
+  setMsg("Saving…");
+  try {
+    const res = await fetch("/api/settings", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) { showErrors(res.status, data); return; }
+    conf = data;
+    renderSettings();
+    setMsg("Saved · applies to new requests", "ok");
+    loadModels();
+    refresh();
+  } catch {
+    setMsg("Couldn’t reach the proxy", "err");
+  } finally {
+    $("settings-save").disabled = !Object.keys(draft()).length;
+  }
+}
+
+function showToken(value) {
+  $("token-box").hidden = false;
+  $("token-value").textContent = value ?? "No token set yet.";
+  $("token-copy").hidden = !value;
+  $("token-reveal").textContent = "Hide";
+  $("token-reveal").setAttribute("aria-expanded", "true");
+}
+
+function hideToken() {
+  const box = $("token-box");
+  if (!box) return;
+  box.hidden = true;
+  $("token-value").textContent = "";
+  $("token-reveal").textContent = "Reveal";
+  $("token-reveal").setAttribute("aria-expanded", "false");
+  $("token-confirm").hidden = true;
+  $("token-note").textContent = "";
+}
+
+function tokenNote(text, cls = "") {
+  $("token-note").className = "help " + cls;
+  $("token-note").textContent = text;
+}
+
+async function revealToken() {
+  if (!$("token-box").hidden) { hideToken(); return; }
+  try {
+    const res = await fetch("/api/settings/token", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    if (!res.ok) throw new Error(res.status);
+    showToken((await res.json()).token);
+    tokenNote("");
+  } catch {
+    tokenNote("Couldn’t read the token", "msg err");
+  }
+}
+
+async function rotateToken() {
+  $("token-confirm").hidden = true;
+  try {
+    const res = await fetch("/api/settings/token/rotate", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(data?.error || "Couldn’t rotate the token (HTTP " + res.status + ")");
+    Object.assign(fieldOf("gateway_token"), { set: true, source: "app" });
+    clears.delete("gateway_token");
+    $("field-gateway_token").outerHTML = fieldHtml(fieldOf("gateway_token"));
+    $("token-rotate").textContent = "Rotate";
+    showToken(data.token);
+    tokenNote("New token saved. Copy it into HYBRID_GATEWAY_TOKEN in ~/.hermes/.env.", "msg ok");
+    $("token-copy").focus();
+    updateDraft();
+  } catch (err) {
+    tokenNote(err.message, "msg err");
+    $("token-rotate").focus();
+  }
+}
+
+async function copyToken() {
+  const value = $("token-value").textContent;
+  try {
+    await navigator.clipboard.writeText(value);
+    $("token-copy").textContent = "Copied";
+  } catch {
+    getSelection().selectAllChildren($("token-value"));
+    $("token-copy").textContent = "Press ⌘C";
+  }
+  setTimeout(() => { if ($("token-copy")) $("token-copy").textContent = "Copy"; }, 1600);
+}
+
+const dlg = $("settings");
+let pressedBackdrop = false;
+$("settings-open").addEventListener("click", openSettings);
+$("settings-close").addEventListener("click", () => dlg.close());
+dlg.addEventListener("pointerdown", (e) => { pressedBackdrop = e.target === dlg; });
+dlg.addEventListener("click", (e) => { if (e.target === dlg && pressedBackdrop) dlg.close(); });
+dlg.addEventListener("close", () => { hideToken(); $("settings-open").focus(); });
+$("settings-form").addEventListener("submit", saveSettings);
+$("settings-form").addEventListener("input", (e) => {
+  if (e.target.type === "password" && e.target.value && clears.has(e.target.name)) {
+    clears.delete(e.target.name);
+    const btn = $("settings-form").querySelector(`[data-clear="${e.target.name}"]`);
+    if (btn) { btn.textContent = "Clear"; btn.setAttribute("aria-pressed", "false"); }
+  }
+  clearError(e.target);
+  updateDraft();
+});
+$("settings-form").addEventListener("click", (e) => {
+  const clear = e.target.closest("[data-clear]");
+  if (clear) {
+    const key = clear.dataset.clear;
+    const input = $("set-" + key);
+    const on = !clears.has(key);
+    on ? clears.add(key) : clears.delete(key);
+    input.value = "";
+    input.placeholder = on ? "Removed on save" : "Saved in Keychain";
+    const note = noteHtml(fieldOf(key), on);
+    $("set-" + key + "-note").innerHTML = note;
+    $("set-" + key + "-note").hidden = !note;
+    clear.textContent = on ? "Undo" : "Clear";
+    clear.setAttribute("aria-pressed", String(on));
+    clearError(input);
+    updateDraft();
+    return;
+  }
+  switch (e.target.id) {
+    case "token-reveal": revealToken(); break;
+    case "token-copy": copyToken(); break;
+    case "token-rotate":
+      if (!fieldOf("gateway_token").set) { rotateToken(); break; }
+      $("token-confirm").hidden = false;
+      tokenNote("");
+      $("token-rotate-no").focus();
+      break;
+    case "token-rotate-yes": rotateToken(); break;
+    case "token-rotate-no": $("token-confirm").hidden = true; $("token-rotate").focus(); break;
+  }
+});
+$("settings-discard").addEventListener("click", () => { renderSettings(); setMsg(""); });
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

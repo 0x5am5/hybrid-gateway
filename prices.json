@@ -1,0 +1,19 @@
+{
+  "verified": "2026-10-20",
+  "currency": "USD",
+  "unit": "per 1M tokens",
+  "models": {
+    "zai-org/GLM-5.3-Flash": {
+      "label": "GLM-5.3 Flash",
+      "input": 0.135,
+      "cached": 0.027,
+      "output": 0.45
+    },
+    "moonshotai/Kimi-K3": {
+      "label": "Kimi K3",
+      "input": 2.70,
+      "cached": 0.27,
+      "output": 13.50
+    }
+  }
+}
