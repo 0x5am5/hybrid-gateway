@@ -15,15 +15,24 @@ Hermes ──► 127.0.0.1:8787/local/v1/*  ──► local server (llama-server
 | `gateway.py` | Proxy, auto-router, secret redaction, dashboard and settings API, and the `serve`/`route`/`pack`/`scan` CLI. One file with inline [uv](https://docs.astral.sh/uv/) dependencies. |
 | `dashboard.html` | The dashboard and Settings drawer. No build step. |
 | `prices.json` | USD per 1M tokens for each Telnyx model, its display label, and the `verified` date. |
-| `test_gateway.py` | End-to-end checks; all but the path check need the running proxy. |
+| `test_gateway.py` | End-to-end checks; all but the `paths` and `secrets` checks need the running proxy. |
+| `.github/workflows/ci.yml` | Lint, type-check and the offline tests on every push and pull request. |
 | `.env.example` | Template for `.env`, the optional [env file](#the-env-file). |
 | `.env`, `settings.json`, `gateway.db` | Yours: created locally next to `gateway.py` and gitignored. `.env` is your env file, `settings.json` holds values saved in the Settings drawer, `gateway.db` is the request log. |
 
 ## Quick start
 
-You need [uv](https://docs.astral.sh/uv/). It fetches Python 3.12 and the dependencies on first run.
+You need:
+
+- [uv](https://docs.astral.sh/uv/). It fetches Python 3.12 and the dependencies on first run.
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent), the client this sits in front of.
+- A local OpenAI-compatible server with a model loaded, such as [oMLX](#local-servers) or llama-server.
+- A [Telnyx](https://telnyx.com/) API key with Inference access.
+- macOS, for the Keychain. Elsewhere it runs too, but secrets have to come from env vars or `.env`.
 
 ```sh
+git clone https://github.com/0x5am5/hybrid-gateway.git
+cd hybrid-gateway
 cp .env.example .env && chmod 600 .env   # optional: fill in any values you'd rather keep in a file
 uv run gateway.py serve
 ```
@@ -60,7 +69,7 @@ Then [point Hermes at the proxy](#hermes-setup). Prefer environment variables? E
 - **No restart.** Saved changes apply to the next request. `prices.json` is re-read on every refresh, so hand edits apply too.
 - **Startup only** (shell > env file > default, shown read-only in Settings): `HYBRID_GATEWAY_PORT` (`8787`), `HYBRID_GATEWAY_DB` (`gateway.db`), `HYBRID_GATEWAY_PRICES` (`prices.json`), `HYBRID_GATEWAY_SETTINGS` (`settings.json`), `HYBRID_GATEWAY_KEYCHAIN_SERVICE` (`hybrid-gateway`), and `HYBRID_GATEWAY_ENV_FILE` (shell only, `.env`).
 - **Paths.** Files default to the folder holding `gateway.py`, and relative paths in these variables start from there, not from where you run the command. `~` is expanded. See [Moving the project](#moving-the-project).
-- **Legacy names** still work, in the shell and the env file: `LLAMA_SERVER_URL`, `LLAMA_SERVER_API_KEY`, `HYBRID_GATEWAY_AUTO_LOCAL_MODEL` and `TELNYX_BASE_URL`.
+- **Legacy names** still work, in the shell and the env file: `LLAMA_SERVER_URL`, `LLAMA_SERVER_API_KEY` and `TELNYX_BASE_URL`.
 - An invalid env value stops `serve` with an error naming the variable (and the env file, if it came from there), never the value. An invalid value in `settings.json` is ignored with a warning.
 
 The Settings drawer also checks both backends' model lists and offers them as suggestions in the model fields.
@@ -216,10 +225,12 @@ alias gateway="uv run $PWD/gateway.py"
 With the proxy running and a model loaded on the local server:
 
 ```sh
-uv run test_gateway.py                         # paths, settings, local, Telnyx and auto
+uv run test_gateway.py                         # paths, secrets, settings, local, Telnyx and auto
 uv run test_gateway.py --only settings         # or paths, secrets, local, telnyx, auto
 uv run test_gateway.py --telnyx-model moonshotai/Kimi-K3
 ```
+
+CI runs the lint and type-check from `AGENTS.md` plus `--only paths` and `--only secrets`, which need no proxy, model or keys. Run the rest locally before you push.
 
 - **local / telnyx:** lists models, sends one non-streaming and one streaming request, checks the stream carried usage and that two rows landed with token counts. Telnyx also checks that a wrong token is rejected.
 - **auto:** one routed request decided by the router model, then dry runs of tool-loop stickiness, the secret rule (a credential, and a `.env.local` tool result) and the context rule.

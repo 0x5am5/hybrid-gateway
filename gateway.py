@@ -227,7 +227,7 @@ FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("local_api_key", "local", "API key", "secret", ("HYBRID_GATEWAY_LOCAL_API_KEY", "LLAMA_SERVER_API_KEY"),
               None, "Replaces the client's auth on /local requests; leave unset if the server needs none."),
     FieldSpec("local_model", "local", "Mac model", "model",
-              ("HYBRID_GATEWAY_LOCAL_MODEL", "HYBRID_GATEWAY_AUTO_LOCAL_MODEL"), None,
+              ("HYBRID_GATEWAY_LOCAL_MODEL",), None,
               "The model /auto uses for the Mac route; /auto returns 503 until it is set."),
     FieldSpec("router_model", "local", "Router model", "model", ("HYBRID_GATEWAY_ROUTER_MODEL",),
               "gemma-4-e2b-it-4bit", "Small model on the local server that picks a route for each new user turn."),
