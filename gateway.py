@@ -33,7 +33,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1113,8 +1113,10 @@ SAFE_EMAIL_DOMAIN_RE = re.compile(
     r"|users\.noreply\.github\.com)$"
 )
 SAFE_EMAIL_LOCAL_RE = re.compile(r"(?i)^(?:git|no-?reply|do-?not-?reply)$")
+# File extensions that are not also top-level domains (unlike .md, Moldova, or .py, Paraguay), so name@x.png is a file.
 FILE_SUFFIXES = {"png", "jpg", "jpeg", "gif", "svg", "webp", "avif", "ico", "css", "scss", "js", "mjs", "cjs", "ts",
-                 "tsx", "jsx", "json", "py", "md", "html", "txt", "tgz"}
+                 "tsx", "jsx", "json", "html", "txt", "tgz"}
+ASSET_DOMAIN_RE = re.compile(r"(?i)^\d+(?:\.\d+)?x\.\w+$")  # logo@2x.png, icon@1.5x.md
 URL_USERINFO_RE = re.compile(r"://[^\s/@]*$")
 PHONE_RE = re.compile(
     r"(?<![\w+./-])(?:"
@@ -1161,20 +1163,48 @@ def phone_number(text: str) -> bool:
     return 9 <= n <= 15 if text.startswith("+") else 10 <= n <= 11
 
 
+SEPARATORS = " -."  # between the groups of a card, IBAN or phone number
+
+
+def valid_spans(candidate: str, valid: Callable[[str], bool], any_start: bool) -> Iterator[tuple[int, int]]:
+    """(start, end) offsets of the parts of a greedy match that pass `valid`, longest first and never overlapping.
+
+    Patterns match greedily, so a valid number followed by another group (an IBAN then "EUR", a card then its CVV)
+    comes back as one candidate that fails as a whole. Parts are cut at separators only; with any_start False they all
+    start where the match does, for shapes that are only distinctive at their start (phone numbers).
+    """
+    starts = [i for i, c in enumerate(candidate) if c not in SEPARATORS and (i == 0 or candidate[i - 1] in SEPARATORS)]
+    ends = [i + 1 for i, c in enumerate(candidate)
+            if c not in SEPARATORS and (i + 1 == len(candidate) or candidate[i + 1] in SEPARATORS)]
+    pos = 0
+    for start in starts if any_start else starts[:1]:
+        if start < pos:
+            continue
+        end = next((e for e in reversed(ends) if e > start and valid(candidate[start:e])), None)
+        if end is not None:
+            yield start, end
+            pos = end
+
+
+
 def iter_pii(text: str) -> Iterator[tuple[int, int, str]]:
     """Yield (start, end, kind) for each likely piece of personal data in text."""
     for m in EMAIL_RE.finditer(text):
         local, _, domain = m.group().partition("@")
-        if SAFE_EMAIL_DOMAIN_RE.search(domain) or SAFE_EMAIL_LOCAL_RE.match(local) \
+        if SAFE_EMAIL_DOMAIN_RE.search(domain) or SAFE_EMAIL_LOCAL_RE.match(local) or ASSET_DOMAIN_RE.match(domain) \
                 or m.group("tld").lower() in FILE_SUFFIXES or URL_USERINFO_RE.search(text, 0, m.start()):
             continue
         yield m.start(), m.end(), "email"
-    for kind, rx, valid in (("phone", PHONE_RE, phone_number), ("card-number", CARD_RE, card_number),
-                            ("iban", IBAN_RE, iban_valid), ("uk-ni-number", UK_NI_RE, None),
-                            ("us-ssn", US_SSN_RE, None)):
+    checked: tuple[tuple[str, re.Pattern[str], Callable[[str], bool], bool], ...] = (
+        ("phone", PHONE_RE, phone_number, False), ("card-number", CARD_RE, card_number, True),
+        ("iban", IBAN_RE, iban_valid, True))
+    for kind, rx, valid, any_start in checked:
         for m in rx.finditer(text):
-            if valid is None or valid(m.group()):
-                yield m.start(), m.end(), kind
+            for start, end in valid_spans(m.group(), valid, any_start):
+                yield m.start() + start, m.start() + end, kind
+    for kind, rx in (("uk-ni-number", UK_NI_RE), ("us-ssn", US_SSN_RE)):
+        for m in rx.finditer(text):
+            yield m.start(), m.end(), kind
 
 
 def find_secrets(text: str, pii: bool = True) -> list[tuple[int, int, str]]:
@@ -1285,8 +1315,9 @@ def has_pii(body: JSON) -> bool:
     return any(next(iter_pii(t), None) for t in conversation_texts(body))
 
 
-# Keys whose values are never prose: binary payloads, ids and enums. Inside tool call arguments every key is checked,
-# since those are the model's own choice of names.
+# Keys whose values are never prose in protocol objects (messages and Responses input items): binary payloads, ids and
+# enums. Everywhere else (metadata, tool call arguments, ...) keys are the client's or model's own names, so every value
+# is checked.
 REDACT_SKIP_KEYS = {"role", "type", "id", "tool_call_id", "name", "image_url", "input_audio", "file"}
 # Top-level fields that are the agent's own schemas, never conversation text.
 REDACT_SKIP_TOP = {"tools", "functions", "tool_choice", "response_format"}
@@ -1307,26 +1338,26 @@ def redact_body(body: JSON) -> list[str]:
     files = secret_file_calls(body)
     kinds: list[str] = []
 
-    def walk(value: Any, key: str | None = None, in_args: bool = False) -> Any:
-        if key in REDACT_SKIP_KEYS and not in_args:
+    def walk(value: Any, key: str | None = None, free: bool = False) -> Any:
+        if key in REDACT_SKIP_KEYS and not free:
             return value
         if isinstance(value, str):
-            if key == "arguments" and not in_args:  # tool call arguments are JSON in a string: redact the values
+            if key == "arguments" and not free:  # tool call arguments are JSON in a string: redact the values
                 try:
                     decoded = json.loads(value)
                 except json.JSONDecodeError:
                     decoded = None
                 if isinstance(decoded, (dict, list)):
                     before = len(kinds)
-                    redacted = walk(decoded, in_args=True)
+                    redacted = walk(decoded, free=True)
                     return json.dumps(redacted, ensure_ascii=False) if len(kinds) > before else value
             new, found = redact_text(value)
             kinds.extend(found)
             return new
         if isinstance(value, list):
-            return [walk(v, in_args=in_args) for v in value]
+            return [walk(v, free=free) for v in value]
         if isinstance(value, dict):
-            return {k: walk(v, k, in_args) for k, v in value.items()}
+            return {k: walk(v, k, free) for k, v in value.items()}
         return value
 
     messages = body.get("messages")
@@ -1341,7 +1372,7 @@ def redact_body(body: JSON) -> list[str]:
                 messages[i] = walk(msg)
     for key in list(body):  # prompt, input, instructions, metadata, user and anything else a client sends
         if key not in REDACT_SKIP_TOP and key != "messages":
-            body[key] = walk(body[key])
+            body[key] = walk(body[key], free=key != "input")
     if kinds and isinstance(messages, list):
         first = messages[0] if messages else None
         if isinstance(first, dict) and first.get("role") in ("system", "developer") \

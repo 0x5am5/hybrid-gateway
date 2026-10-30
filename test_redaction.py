@@ -913,6 +913,31 @@ def test_every_top_level_field_is_redacted(gw: Gateway, key: str) -> None:
     assert "[redacted:aws-key]" in json.dumps(sent.json[key])
 
 
+@pytest.mark.parametrize("key", ["name", "id", "type", "role", "file", "image_url"])
+def test_free_form_metadata_is_checked_under_any_key(gw: Gateway, key: str) -> None:
+    """Codex review on PR #1: protocol key names inside metadata used to be skipped."""
+    email, ssn = fake_pii()["email"], fake_pii()["us-ssn"]
+    gw.post("/telnyx/v1/chat/completions", chat({"role": "user", "content": "hi"},
+                                                metadata={key: email, "nested": [{key: ssn}]}))
+
+    [sent] = gw.upstreams.telnyx
+    assert_absent(sent, email, ssn)
+    assert sent.json["metadata"] == {key: "[redacted:email]", "nested": [{key: "[redacted:us-ssn]"}]}
+
+
+def test_protocol_objects_keep_their_ids_and_binary_parts(gw: Gateway) -> None:
+    image = {"url": "data:image/png;base64," + "AKIA" + "Q7XW" * 4}  # base64 that happens to look like a key
+    item = {"type": "message", "id": "msg_1", "role": "user",
+            "content": [{"type": "input_text", "text": fake_pii()["email"]},
+                        {"type": "input_image", "image_url": image}]}
+    gw.post("/telnyx/v1/responses", {"model": FLASH_MODEL, "input": [item]})
+
+    [sent] = gw.upstreams.telnyx
+    [got] = sent.json["input"]
+    assert got["content"][1] == item["content"][1], "binary payloads in protocol objects are never altered"
+    assert (got["id"], got["type"], got["content"][0]["text"]) == ("msg_1", "message", "[redacted:email]")
+
+
 def test_response_format_schemas_are_left_alone(gw: Gateway) -> None:
     schema = {"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "object"}}}
     gw.post("/telnyx/v1/chat/completions", chat({"role": "user", "content": fake_secrets()["aws-key"]},
@@ -1014,6 +1039,39 @@ def test_common_personal_data_formats_are_redacted(gw: Gateway, kind: str, value
     assert f"[redacted:{kind}]" in sent.json["messages"][-1]["content"]
 
 
+@pytest.mark.parametrize(("text", "kind", "value"), [
+    ("jane@company.md", "email", "jane@company.md"),  # .md is Moldova, not just Markdown
+    ("jane@company.py", "email", "jane@company.py"),  # .py is Paraguay
+    ("IBAN AT611904300234573201 EUR", "iban", "AT611904300234573201"),
+    ("IBAN GB82 WEST 1234 5698 7654 32 GBP", "iban", "GB82 WEST 1234 5698 7654 32"),
+    ("card 4111 1111 1111 1111 123", "card-number", "4111 1111 1111 1111"),  # followed by its CVV
+    ("ref 22 4111 1111 1111 1111", "card-number", "4111 1111 1111 1111"),  # preceded by another number
+    ("call +44 20 7946 0958 12345", "phone", "+44 20 7946 0958"),
+], ids=["moldova", "paraguay", "iban-currency", "iban-spaced-currency", "card-cvv", "card-after-ref", "phone-then-ref"])
+def test_personal_data_next_to_other_text_is_still_found(gw: Gateway, text: str, kind: str, value: str) -> None:
+    """Codex review on PR #1: greedy matches and file-like email suffixes used to hide these."""
+    gw.post("/telnyx/v1/chat/completions", chat({"role": "user", "content": text}))
+
+    [sent] = gw.upstreams.telnyx
+    assert_absent(sent, value)
+    assert sent.json["messages"][-1]["content"] == text.replace(value, f"[redacted:{kind}]")
+
+
+def test_two_cards_in_a_row_are_both_redacted(gw: Gateway) -> None:
+    gw.post("/telnyx/v1/chat/completions", chat({"role": "user", "content": "4111 1111 1111 1111 5555 5555 5555 4444"}))
+
+    [sent] = gw.upstreams.telnyx
+    assert sent.json["messages"][-1]["content"] == "[redacted:card-number] [redacted:card-number]"
+
+
+def test_auto_personal_data_next_to_other_text_keeps_the_mac(gw: Gateway) -> None:
+    gw.upstreams.router_reply = router_says("k3")
+    auto(gw, {"role": "user", "content": "Why did the transfer to AT611904300234573201 EUR fail?"})
+
+    assert gw.upstreams.telnyx == []
+    assert work_rows(gw)[0]["route_source"] == "rule:pii"
+
+
 def test_personal_data_is_redacted_everywhere_a_credential_would_be(gw: Gateway) -> None:
     p = fake_pii()
     gw.post("/telnyx/v1/chat/completions", chat(
@@ -1047,11 +1105,13 @@ def test_a_customer_export_read_by_a_tool_is_redacted_row_by_row(gw: Gateway) ->
 
 
 @pytest.mark.parametrize("text", [
-    "Contact user@example.com for help", "logo@2x.png", "git@github.com:0x5am5/hybrid-gateway.git",
+    "Contact user@example.com for help", "logo@2x.png", "icon@1.5x.md", "app.min@3x.webp",
+    "git@github.com:0x5am5/hybrid-gateway.git",
     "npm i react@18.2.0 @types/node", "Co-Authored-By: Bot <12345+bot@users.noreply.github.com>",
     "from: noreply@acme-test.co.uk", "admin@localhost", "dev@app.test",
     "2026-10-30T12:00:00Z", "10.0.0.1:5432", "v1.12.3", "ts=1730246400000", "id 0123456789", "@@ -10,7 +20,8 @@",
-    "4111111111111112", "550e8400-e29b-41d4-a716-446655440000", "GB82 WEST 1234 5698 7654 33", "000-12-3456",
+    "4111111111111112", "GB82 WEST 1234 5698 7654 33 GBP", "550e8400-e29b-41d4-a716-446655440000",
+    "GB82 WEST 1234 5698 7654 33", "000-12-3456",
     "QQ 12 34 56 C", "port 8787 and 65535", "total 1,234,567.89", "sha 3f2a9c1d4e5b6a7f0c1d",
 ])
 def test_lookalikes_are_not_treated_as_personal_data(gw: Gateway, text: str) -> None:
