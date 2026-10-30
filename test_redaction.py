@@ -1057,11 +1057,19 @@ def test_personal_data_next_to_other_text_is_still_found(gw: Gateway, text: str,
     assert sent.json["messages"][-1]["content"] == text.replace(value, f"[redacted:{kind}]")
 
 
-def test_two_cards_in_a_row_are_both_redacted(gw: Gateway) -> None:
-    gw.post("/telnyx/v1/chat/completions", chat({"role": "user", "content": "4111 1111 1111 1111 5555 5555 5555 4444"}))
+@pytest.mark.parametrize("text", [
+    "4111 1111 1111 1111 5555 5555 5555 4444",
+    "3782 822463 10005 4111 1111 1111 1111",  # Codex review on PR #1: the Amex match swallowed the Visa's first group
+    "3782 822463 10005 6011 1111 1111 1117 5555 5555 5555 4444",
+    "GB82 WEST 1234 5698 7654 32 DE89 3704 0044 0532 0130 00",
+    "+44 20 7946 0958 +1 415 555 0132",
+])
+def test_identifiers_in_a_row_are_all_redacted(gw: Gateway, text: str) -> None:
+    gw.post("/telnyx/v1/chat/completions", chat({"role": "user", "content": text}))
 
     [sent] = gw.upstreams.telnyx
-    assert sent.json["messages"][-1]["content"] == "[redacted:card-number] [redacted:card-number]"
+    content = sent.json["messages"][-1]["content"]
+    assert not any(c.isdigit() for c in content.replace("redacted", "")), content
 
 
 def test_auto_personal_data_next_to_other_text_keeps_the_mac(gw: Gateway) -> None:

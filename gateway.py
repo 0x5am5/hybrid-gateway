@@ -1199,9 +1199,13 @@ def iter_pii(text: str) -> Iterator[tuple[int, int, str]]:
         ("phone", PHONE_RE, phone_number, False), ("card-number", CARD_RE, card_number, True),
         ("iban", IBAN_RE, iban_valid, True))
     for kind, rx, valid, any_start in checked:
-        for m in rx.finditer(text):
-            for start, end in valid_spans(m.group(), valid, any_start):
-                yield m.start() + start, m.start() + end, kind
+        pos = 0
+        while hit := rx.search(text, pos):
+            # Resume after what was found, not after the greedy match: it may have swallowed the start of the next one.
+            pos = hit.start() + 1
+            for start, end in valid_spans(hit.group(), valid, any_start):
+                yield hit.start() + start, hit.start() + end, kind
+                pos = hit.start() + end
     for kind, rx in (("uk-ni-number", UK_NI_RE), ("us-ssn", US_SSN_RE)):
         for m in rx.finditer(text):
             yield m.start(), m.end(), kind
