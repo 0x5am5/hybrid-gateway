@@ -26,7 +26,7 @@ Hermes ──► 127.0.0.1:8787/local/v1/*  ──► local server (llama-server
 You need:
 
 - [uv](https://docs.astral.sh/uv/). It fetches Python 3.12 and the dependencies on first run.
-- [Hermes Agent](https://github.com/NousResearch/hermes-agent), the client this sits in front of.
+- [Hermes Agent](https://portal.nousresearch.com/r/samuel-gregory), the client this sits in front of.
 - A local OpenAI-compatible server with a model loaded, such as [oMLX](#local-servers) or llama-server.
 - A [Telnyx](https://samuelgregory.co.uk/telnyx) API key with Inference access.
 - macOS, for the Keychain. Elsewhere it runs too, but secrets have to come from env vars or `.env`.
