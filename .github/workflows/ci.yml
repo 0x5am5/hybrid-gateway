@@ -27,14 +27,15 @@ jobs:
           cache-dependency-glob: |
             gateway.py
             test_gateway.py
+            test_redaction.py
 
       - name: Lint
-        run: uvx ruff check --line-length 120 gateway.py test_gateway.py
+        run: uvx ruff check --line-length 120 gateway.py test_gateway.py test_redaction.py
 
       - name: Type-check
         run: >
-          uvx --with fastapi --with httpx --with tiktoken --with pathspec --with uvicorn --with keyring
-          mypy --python-version 3.12 --ignore-missing-imports gateway.py test_gateway.py
+          uvx --with fastapi --with httpx --with tiktoken --with pathspec --with uvicorn --with keyring --with pytest
+          mypy --python-version 3.12 --ignore-missing-imports gateway.py test_gateway.py test_redaction.py
 
       # The rest of test_gateway.py needs a running proxy, a local model server and Telnyx.
       - name: Test paths
@@ -42,3 +43,6 @@ jobs:
 
       - name: Test secrets
         run: uv run test_gateway.py --only secrets
+
+      - name: Test redaction and routing
+        run: uv run test_redaction.py

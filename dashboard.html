@@ -401,7 +401,7 @@ function renderRouter(r, cols, redactions) {
   const avg = r.avg_ms === null ? "" : ` · avg <b>${dur(r.avg_ms)}</b>`;
   const fb = r.fallbacks ? ` · <b>${nf.format(r.fallbacks)}</b> fallbacks` : "";
   const red = redactions && redactions.credentials
-    ? ` · <b>${nf.format(redactions.credentials)}</b> credentials redacted from <b>${nf.format(redactions.requests)}</b> cloud requests`
+    ? ` · <b>${nf.format(redactions.credentials)}</b> credentials and personal details redacted from <b>${nf.format(redactions.requests)}</b> cloud requests`
     : "";
   $("router-meta").innerHTML = total || r.decisions
     ? `Router <b>${esc(r.model)}</b> on the Mac · <b>${nf.format(r.decisions)}</b> decisions${avg}${fb}${red}`

@@ -15,7 +15,7 @@ Usage:
     uv run gateway.py serve          # proxy + dashboard on 127.0.0.1:8787
     uv run gateway.py route "<text>" # dry-run the /auto router
     uv run gateway.py pack <path>    # pack a repo into one text file, print tokens
-    uv run gateway.py scan <path>    # list files and lines that look like secrets
+    uv run gateway.py scan <path>    # list files and lines that look like secrets or personal data
 """
 
 import argparse
@@ -634,9 +634,9 @@ CREATE INDEX IF NOT EXISTS requests_job ON requests(job_id);
 ADDED_COLUMNS = {
     "purpose": "TEXT NOT NULL DEFAULT 'work'",  # 'work' | 'router'
     "route": "TEXT",  # 'mac' | 'flash' | 'k3' for requests that came in on /auto
-    "route_source": "TEXT",  # 'router' | 'rule:secret' | 'rule:context' | 'rule:tool-loop' | 'fallback'
+    "route_source": "TEXT",  # 'router' | 'rule:secret' | 'rule:pii' | 'rule:context' | 'rule:tool-loop' | 'fallback'
     "route_category": "TEXT",  # fixed list from the router, never free text
-    "redactions": "INTEGER NOT NULL DEFAULT 0",  # credentials replaced before a request went to the cloud
+    "redactions": "INTEGER NOT NULL DEFAULT 0",  # credentials and personal data replaced before going to the cloud
 }
 
 
@@ -974,7 +974,7 @@ class Decision:
     """Where an /auto request runs, and why."""
 
     route: Route
-    source: str  # 'router' | 'rule:secret' | 'rule:context' | 'rule:tool-loop' | 'fallback'
+    source: str  # 'router' | 'rule:secret' | 'rule:pii' | 'rule:context' | 'rule:tool-loop' | 'fallback'
     category: str | None = None
     router_ms: int | None = None
 
@@ -1102,10 +1102,87 @@ def iter_secrets(text: str) -> Iterator[tuple[int, int, str]]:
             yield m.start("v"), m.end("v"), "credential"
 
 
-def find_secrets(text: str) -> list[tuple[int, int, str]]:
-    """Sorted, non-overlapping (start, end, kind) spans of likely credentials; overlaps keep the most specific kind."""
+# Personal data with a recognisable shape. Like credentials, matching favours precision: each kind has a checksum,
+# a known prefix or a strict layout, and documentation-style values (example.com, @2x.png, git@github.com) are skipped.
+EMAIL_RE = re.compile(
+    r"(?<![\w.%+-])[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"(?P<tld>[A-Za-z]{2,24})\b(?![@-])"
+)
+SAFE_EMAIL_DOMAIN_RE = re.compile(
+    r"(?i)(?:^|\.)(?:example\.(?:com|org|net)|[\w-]+\.(?:example|test|invalid|localhost|local)"
+    r"|users\.noreply\.github\.com)$"
+)
+SAFE_EMAIL_LOCAL_RE = re.compile(r"(?i)^(?:git|no-?reply|do-?not-?reply)$")
+FILE_SUFFIXES = {"png", "jpg", "jpeg", "gif", "svg", "webp", "avif", "ico", "css", "scss", "js", "mjs", "cjs", "ts",
+                 "tsx", "jsx", "json", "py", "md", "html", "txt", "tgz"}
+URL_USERINFO_RE = re.compile(r"://[^\s/@]*$")
+PHONE_RE = re.compile(
+    r"(?<![\w+./-])(?:"
+    r"\+\d{1,3}[ .-]?(?:\(0?\d{1,4}\)[ .-]?)?\d{1,4}(?:[ .-]?\d{2,4}){1,4}"  # +44 20 7946 0958, +1 (415) 555-0132
+    r"|\(0\d{2,4}\)[ .-]?\d{3,4}[ .-]?\d{3,4}"  # (020) 7946 0958
+    r"|0\d{2,4}[ -]\d{3,4}[ -]?\d{3,4}|07\d{9}"  # 020 7946 0958, 07700 900123, 07700900123
+    r"|\(\d{3}\)[ .-]?\d{3}[ .-]\d{4}|\d{3}[.-]\d{3}[.-]\d{4}"  # (415) 555-0132, 415-555-0132
+    r")(?!\w|[.-]\d)"
+)
+CARD_RE = re.compile(r"(?<![\w.-])[2-6](?:[ -]?\d){12,18}(?!\w|[.-]\d)")
+IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b")
+UK_NI_RE = re.compile(r"\b(?!BG|GB|KN|NK|NT|TN|ZZ)[A-CEGHJ-PR-TW-Z][A-CEGHJ-NPR-TW-Z] ?\d{2} ?\d{2} ?\d{2} ?[A-D]\b")
+US_SSN_RE = re.compile(r"\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b")
+
+
+def luhn_valid(digits: str) -> bool:
+    """The Luhn checksum every payment card number carries."""
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        n = int(d) * (2 if i % 2 else 1)
+        total += n - 9 if n > 9 else n
+    return total % 10 == 0
+
+
+def card_number(text: str) -> bool:
+    """A Visa, Mastercard, Amex or Discover number: right prefix, right length and a valid Luhn checksum."""
+    d = re.sub(r"[ -]", "", text)
+    brand = (d[0] == "4" and len(d) in (13, 16, 19)) or (len(d) == 16 and (51 <= int(d[:2]) <= 55
+                                                                         or 2221 <= int(d[:4]) <= 2720)) \
+        or (len(d) == 15 and d[:2] in ("34", "37")) \
+        or (16 <= len(d) <= 19 and (d.startswith(("6011", "65")) or 644 <= int(d[:3]) <= 649))
+    return brand and luhn_valid(d)
+
+
+def iban_valid(text: str) -> bool:
+    """An IBAN with a valid ISO 13616 mod-97 checksum."""
+    s = text.replace(" ", "")
+    return 15 <= len(s) <= 34 and int("".join(str(int(c, 36)) for c in s[4:] + s[:4])) % 97 == 1
+
+
+def phone_number(text: str) -> bool:
+    """A phone number with a plausible digit count: 9-15 for international (E.164), 10-11 for national."""
+    n = sum(c.isdigit() for c in text)
+    return 9 <= n <= 15 if text.startswith("+") else 10 <= n <= 11
+
+
+def iter_pii(text: str) -> Iterator[tuple[int, int, str]]:
+    """Yield (start, end, kind) for each likely piece of personal data in text."""
+    for m in EMAIL_RE.finditer(text):
+        local, _, domain = m.group().partition("@")
+        if SAFE_EMAIL_DOMAIN_RE.search(domain) or SAFE_EMAIL_LOCAL_RE.match(local) \
+                or m.group("tld").lower() in FILE_SUFFIXES or URL_USERINFO_RE.search(text, 0, m.start()):
+            continue
+        yield m.start(), m.end(), "email"
+    for kind, rx, valid in (("phone", PHONE_RE, phone_number), ("card-number", CARD_RE, card_number),
+                            ("iban", IBAN_RE, iban_valid), ("uk-ni-number", UK_NI_RE, None),
+                            ("us-ssn", US_SSN_RE, None)):
+        for m in rx.finditer(text):
+            if valid is None or valid(m.group()):
+                yield m.start(), m.end(), kind
+
+
+def find_secrets(text: str, pii: bool = True) -> list[tuple[int, int, str]]:
+    """Sorted, non-overlapping (start, end, kind) spans of likely credentials and, unless pii is False, personal
+    data; overlaps keep the most specific kind."""
+    found = [*iter_secrets(text), *(iter_pii(text) if pii else ())]
     merged: list[tuple[int, int, str]] = []
-    for start, end, kind in sorted(iter_secrets(text), key=lambda s: (s[0], s[2] == "credential")):
+    for start, end, kind in sorted(found, key=lambda s: (s[0], s[2] == "credential")):
         if merged and start < merged[-1][1]:
             prev = merged[-1]
             merged[-1] = (prev[0], max(prev[1], end), prev[2])
@@ -1115,7 +1192,7 @@ def find_secrets(text: str) -> list[tuple[int, int, str]]:
 
 
 def redact_text(text: str) -> tuple[str, list[str]]:
-    """Text with each credential replaced by `[redacted:<kind>]`, and the kinds replaced."""
+    """Text with each credential and piece of personal data replaced by `[redacted:<kind>]`, and the kinds replaced."""
     spans = find_secrets(text)
     if not spans:
         return text, []
@@ -1181,59 +1258,75 @@ def secret_file_calls(body: JSON) -> dict[str, str]:
     return found
 
 
-def has_secret(body: JSON) -> bool:
-    """True if a user, assistant or tool message looks like it holds a credential, or is the result of reading a
-    secrets file. The system prompt and tool schemas are skipped: they are the agent's own text, and often show
-    example URLs."""
-    files = secret_file_calls(body)
+def conversation_texts(body: JSON) -> Iterator[str]:
+    """Text of every user, assistant and tool message, tool call arguments included. The system prompt and tool
+    schemas are skipped: they are the agent's own text, and often show example URLs and addresses."""
     for msg in body.get("messages") or []:
         if not isinstance(msg, dict) or msg.get("role") in ("system", "developer"):
             continue
-        if msg.get("role") == "tool" and msg.get("tool_call_id") in files:
-            return True
-        texts = [message_text(msg), *(s for c in msg.get("tool_calls") or [] for s in strings_in(tool_arguments(c)))]
-        if any(next(iter_secrets(t), None) for t in texts):
-            return True
-    return False
+        yield message_text(msg)
+        for call in msg.get("tool_calls") or []:
+            yield from strings_in(tool_arguments(call))
 
 
-# Keys whose values are never prose: binary payloads, ids and enums.
+def has_secret(body: JSON) -> bool:
+    """True if a user, assistant or tool message looks like it holds a credential, or is the result of reading a
+    secrets file."""
+    files = secret_file_calls(body)
+    if any(isinstance(m, dict) and m.get("role") == "tool" and m.get("tool_call_id") in files
+           for m in body.get("messages") or []):
+        return True
+    return any(next(iter_secrets(t), None) for t in conversation_texts(body))
+
+
+def has_pii(body: JSON) -> bool:
+    """True if a user, assistant or tool message looks like it holds personal data (an email address, phone number,
+    card number, IBAN, NI number or SSN)."""
+    return any(next(iter_pii(t), None) for t in conversation_texts(body))
+
+
+# Keys whose values are never prose: binary payloads, ids and enums. Inside tool call arguments every key is checked,
+# since those are the model's own choice of names.
 REDACT_SKIP_KEYS = {"role", "type", "id", "tool_call_id", "name", "image_url", "input_audio", "file"}
+# Top-level fields that are the agent's own schemas, never conversation text.
+REDACT_SKIP_TOP = {"tools", "functions", "tool_choice", "response_format"}
 REDACTION_NOTE = (
-    "Hybrid Gateway replaced credentials in this conversation with [redacted:<kind>] placeholders before it left the "
-    "user's machine. Never write a placeholder into a file, command or config; leave lines holding one unchanged."
+    "Hybrid Gateway replaced credentials and personal data in this conversation with [redacted:<kind>] placeholders "
+    "before it left the user's machine. Never write a placeholder into a file, command or config; leave lines "
+    "holding one unchanged."
 )
 
 
 def redact_body(body: JSON) -> list[str]:
-    """Redact credentials in place in a request bound for the cloud and return the kinds replaced.
+    """Redact credentials and personal data in place in a request bound for the cloud and return the kinds replaced.
 
-    Every message is covered, the system prompt included; a tool result that read a secrets file is withheld whole.
-    Tool schemas are left alone. The output is deterministic, so the provider's prompt cache still hits.
+    Every field is covered (messages and the system prompt, prompt, input, instructions, metadata, ...); a tool result
+    that read a secrets file is withheld whole. Tool schemas are left alone. The output is deterministic, so the
+    provider's prompt cache still hits.
     """
     files = secret_file_calls(body)
     kinds: list[str] = []
 
-    def walk(value: Any, key: str | None = None) -> Any:
-        if key in REDACT_SKIP_KEYS:
+    def walk(value: Any, key: str | None = None, in_args: bool = False) -> Any:
+        if key in REDACT_SKIP_KEYS and not in_args:
             return value
         if isinstance(value, str):
-            if key == "arguments":  # tool call arguments are JSON in a string: redact the decoded values
+            if key == "arguments" and not in_args:  # tool call arguments are JSON in a string: redact the values
                 try:
                     decoded = json.loads(value)
                 except json.JSONDecodeError:
                     decoded = None
                 if isinstance(decoded, (dict, list)):
                     before = len(kinds)
-                    redacted = walk(decoded)
+                    redacted = walk(decoded, in_args=True)
                     return json.dumps(redacted, ensure_ascii=False) if len(kinds) > before else value
             new, found = redact_text(value)
             kinds.extend(found)
             return new
         if isinstance(value, list):
-            return [walk(v) for v in value]
+            return [walk(v, in_args=in_args) for v in value]
         if isinstance(value, dict):
-            return {k: walk(v, k) for k, v in value.items()}
+            return {k: walk(v, k, in_args) for k, v in value.items()}
         return value
 
     messages = body.get("messages")
@@ -1246,8 +1339,8 @@ def redact_body(body: JSON) -> list[str]:
                 kinds.append("secrets-file")
             else:
                 messages[i] = walk(msg)
-    for key in ("prompt", "input"):  # completions and responses-style bodies
-        if key in body:
+    for key in list(body):  # prompt, input, instructions, metadata, user and anything else a client sends
+        if key not in REDACT_SKIP_TOP and key != "messages":
             body[key] = walk(body[key])
     if kinds and isinstance(messages, list):
         first = messages[0] if messages else None
@@ -1420,10 +1513,14 @@ def create_app(settings: Settings) -> Any:
         redacted: list[str] = []
         if backend == "telnyx" and request.method == "POST":
             target = body if metered else json_object(raw)
+            if target is None and raw.strip():
+                # Fail closed: a body that can't be read (plain text, a multipart upload) can't be redacted.
+                return JSONResponse({"error": "Hybrid Gateway only forwards JSON object bodies to Telnyx, so it can "
+                                              "redact credentials and personal data first"}, status_code=415)
             if target is not None and (redacted := redact_body(target)):
                 raw = json.dumps(target).encode()
                 counts = ", ".join(f"{k} x{n}" if n > 1 else k for k, n in Counter(redacted).items())
-                print(f"hybrid-gateway: redacted {len(redacted)} credential(s) before sending to Telnyx: {counts}",
+                print(f"hybrid-gateway: redacted {len(redacted)} private value(s) before sending to Telnyx: {counts}",
                       file=sys.stderr)
 
         streaming = metered and body.get("stream") is True
@@ -1570,12 +1667,16 @@ def create_app(settings: Settings) -> Any:
         mac_fits = tokens <= cfg.local_context
 
         secret = has_secret(body)
-        if secret and not mac_fits:
-            print("hybrid-gateway: /auto request looks like it holds a credential but is too big for the Mac; "
-                  "routing it normally, with credentials redacted", file=sys.stderr)
+        pii = not secret and has_pii(body)
+        if (secret or pii) and not mac_fits:
+            print("hybrid-gateway: /auto request looks like it holds a credential or personal data but is too big for "
+                  "the Mac; routing it normally, redacted", file=sys.stderr)
         if mac_fits and secret:
             # Credentials stay on the Mac, for this turn and (since they stay in the history) the rest of the chat.
             decision = Decision("mac", "rule:secret")
+        elif mac_fits and pii:
+            # Personal data likewise.
+            decision = Decision("mac", "rule:pii")
         elif tokens > cfg.flash_context:
             decision = Decision("k3", "rule:context")
         elif last_role != "user" and current is not None:
@@ -2040,7 +2141,7 @@ def scan_files(root: Path) -> list[Path]:
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
-    """Report files and lines that look like they hold secrets, without printing any value."""
+    """Report files and lines that look like they hold secrets or personal data, without printing any value."""
     files = scanned = 0
     findings = 0
     for arg in args.paths:
