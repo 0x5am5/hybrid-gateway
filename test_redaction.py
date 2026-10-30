@@ -1063,6 +1063,8 @@ def test_personal_data_next_to_other_text_is_still_found(gw: Gateway, text: str,
     "3782 822463 10005 6011 1111 1111 1117 5555 5555 5555 4444",
     "GB82 WEST 1234 5698 7654 32 DE89 3704 0044 0532 0130 00",
     "+44 20 7946 0958 +1 415 555 0132",
+    "+1 415 555 0132 020 7946 0958",  # Codex review on PR #1: the +1 number swallowed the UK number's area code
+    "+44 20 7946 0958 (415) 555-0132 07700 900123",
 ])
 def test_identifiers_in_a_row_are_all_redacted(gw: Gateway, text: str) -> None:
     gw.post("/telnyx/v1/chat/completions", chat({"role": "user", "content": text}))

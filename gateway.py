@@ -1201,11 +1201,11 @@ def iter_pii(text: str) -> Iterator[tuple[int, int, str]]:
     for kind, rx, valid, any_start in checked:
         pos = 0
         while hit := rx.search(text, pos):
-            # Resume after what was found, not after the greedy match: it may have swallowed the start of the next one.
+            # Rescan from the next group even after a valid match: a greedy match (+1 415 555 0132 020) can swallow
+            # the start of the next number (020 7946 0958). Overlapping spans merge in find_secrets.
             pos = hit.start() + 1
             for start, end in valid_spans(hit.group(), valid, any_start):
                 yield hit.start() + start, hit.start() + end, kind
-                pos = hit.start() + end
     for kind, rx in (("uk-ni-number", UK_NI_RE), ("us-ssn", US_SSN_RE)):
         for m in rx.finditer(text):
             yield m.start(), m.end(), kind
