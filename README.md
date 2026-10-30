@@ -16,6 +16,7 @@ Hermes ──► 127.0.0.1:8787/local/v1/*  ──► local server (llama-server
 | `dashboard.html` | The dashboard and Settings drawer. No build step. |
 | `prices.json` | USD per 1M tokens for each Telnyx model, its display label, and the `verified` date. |
 | `test_gateway.py` | End-to-end checks; all but the `paths` and `secrets` checks need the running proxy. |
+| `test_redaction.py` | Offline tests with Telnyx and the local models mocked: what reaches the cloud is redacted, and requests route by size. Run with `uv run test_redaction.py`. |
 | `.github/workflows/ci.yml` | Lint, type-check and the offline tests on every push and pull request. |
 | `.env.example` | Template for `.env`, the optional [env file](#the-env-file). |
 | `.env`, `settings.json`, `gateway.db` | Yours: created locally next to `gateway.py` and gitignored. `.env` is your env file, `settings.json` holds values saved in the Settings drawer, `gateway.db` is the request log. |
@@ -150,14 +151,15 @@ Don't use `provider: llamacpp`. Hermes resolves it to its own managed llama-serv
 For each request on `/auto`, Hybrid Gateway picks the Mac, Flash or K3 in this order:
 
 1. **Secret rule.** If a user, assistant or tool message looks like it holds a credential, or a tool read a secrets file, the request stays on the Mac. The credential stays in the history, so the rest of the conversation stays on the Mac too. The system prompt and tool schemas aren't checked. If the conversation is too big for the Mac, the rule can't apply: Hybrid Gateway prints a warning and routes the request normally, with the credentials redacted (see [Secrets](#secrets)).
-2. **Context rule.** Bigger than the Flash context: K3.
-3. **Tool-loop stickiness.** If the last message isn't from the user, stay on the conversation's current route, so a tool result goes back to the model that asked for it and the prompt cache stays warm. A Mac conversation that has outgrown the Mac context moves to Flash.
-4. **Router model, on new user turns.** It answers in constrained JSON with a route and a category from a fixed list. If it picks the Mac for a prompt bigger than the Mac context, the request goes to Flash.
-5. **Fallback.** On a timeout, error or unreadable reply, stay on the current route, or the Mac for a new conversation. It never silently moves to the cloud.
+2. **Personal data rule.** The same for personal data: an email address, phone number, payment card number, IBAN, UK National Insurance number or US Social Security number keeps the conversation on the Mac while it fits, and is redacted if it doesn't (see [Personal data](#personal-data)).
+3. **Context rule.** Bigger than the Flash context: K3.
+4. **Tool-loop stickiness.** If the last message isn't from the user, stay on the conversation's current route, so a tool result goes back to the model that asked for it and the prompt cache stays warm. A Mac conversation that has outgrown the Mac context moves to Flash.
+5. **Router model, on new user turns.** It answers in constrained JSON with a route and a category from a fixed list. If it picks the Mac for a prompt bigger than the Mac context, the request goes to Flash.
+6. **Fallback.** On a timeout, error or unreadable reply, stay on the current route, or the Mac for a new conversation. It never silently moves to the cloud.
 
 The router sees the original request and the latest message (start and end, if long), plus the context size, tool count, turn number, current route and whether there are images. It doesn't see the rest of the transcript, the system prompt or tool output. Its prompt names the tiers by their labels in `prices.json`.
 
-Each routed request logs its route, how it was chosen (`router`, `rule:secret`, `rule:context`, `rule:tool-loop` or `fallback`) and the category; the router's own text is never stored. Each router call is logged as a Mac request marked *Router*. Conversations are recognised by a hash of the system prompt and first user message, held in memory only and forgotten after 30 minutes idle.
+Each routed request logs its route, how it was chosen (`router`, `rule:secret`, `rule:pii`, `rule:context`, `rule:tool-loop` or `fallback`) and the category; the router's own text is never stored. Each router call is logged as a Mac request marked *Router*. Conversations are recognised by a hash of the system prompt and first user message, held in memory only and forgotten after 30 minutes idle.
 
 Dry run against the running proxy (nothing is forwarded or logged):
 
@@ -176,7 +178,24 @@ Hybrid Gateway looks for credentials in two ways:
 
 It also treats some files as secrets by name: `.env` and its variants (but not `.env.example`, `.sample` or `.template`), `.dev.vars`, `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`, SSH keys, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `*.tfstate`, `credentials*`, `secrets.*` and service account JSON.
 
-**Everything sent to Telnyx is redacted first**, on `/telnyx` and on `/auto`. Each credential becomes `[redacted:<kind>]` and a tool result that read a secrets file is withheld whole. A short note in the system prompt tells the model not to write placeholders back into files. Redaction covers every message, including the system prompt and tool call arguments, but not tool schemas. The same input always gives the same output, so the provider's prompt cache still hits. Nothing changes on the Mac or in Hermes's own history. Each row logs how many credentials were redacted, and the server prints their kinds, never their values. The dashboard shows the total.
+**Everything sent to Telnyx is redacted first**, on `/telnyx` and on `/auto`. Each credential, and each piece of [personal data](#personal-data), becomes `[redacted:<kind>]`, and a tool result that read a secrets file is withheld whole. A short note in the system prompt tells the model not to write placeholders back into files. Redaction covers every field of the request: every message, including the system prompt and tool call arguments, plus `prompt`, `input`, `instructions`, `metadata`, `user` and the rest. Values are checked under any key, except ids, roles, types and binary parts (images, audio, files) inside messages and Responses `input` items. Only the agent's own schemas (`tools`, `functions`, `tool_choice` and `response_format`) are left alone. The same input always gives the same output, so the provider's prompt cache still hits. Nothing changes on the Mac or in Hermes's own history. Each row logs how many values were redacted, and the server prints their kinds, never the values themselves. The dashboard shows the total.
+
+A POST to Telnyx whose body isn't a JSON object, such as plain text or a multipart upload, can't be redacted, so it is refused with 415 rather than sent as it is.
+
+### Personal data
+
+Hybrid Gateway also recognises personal data with a recognisable shape, and treats it like a credential: redacted on the way to the cloud, and kept on the Mac by `/auto` while the conversation fits.
+
+| Kind | Matches | Checked by |
+| --- | --- | --- |
+| `email` | `jane.doe@acme.co.uk` | skips documentation and test domains (`example.com`, `*.test`, `*.local`, …), `git@`, `noreply@`, GitHub noreply addresses and `name@2x.png`-style file names |
+| `phone` | `+44 20 7946 0958`, `07700 900123`, `(415) 555-0132` | international numbers with 9–15 digits; UK and US national formats with 10–11 |
+| `card-number` | `4111 1111 1111 1111` | Visa, Mastercard, Amex or Discover prefix and length, plus the Luhn checksum |
+| `iban` | `GB82 WEST 1234 5698 7654 32` | the ISO 13616 mod-97 checksum |
+| `uk-ni-number` | `AB 12 34 56 C` | HMRC's prefix rules |
+| `us-ssn` | `123-45-6789` | the dashed format, without the never-issued 000, 666 and 9xx areas |
+
+Names, postal addresses and free-text details have no reliable shape, so they aren't redacted. The router model is told to keep anything involving personal data on the Mac, but it only sees new user turns. If that matters for the work in hand, pin the session with `/model mac`.
 
 Matching favours precision, so unusual formats can slip through. Treat it as a safety net, not the only safeguard. Before giving an agent a folder, check it:
 
@@ -184,13 +203,13 @@ Matching favours precision, so unusual formats can slip through. Treat it as a s
 uv run gateway.py scan ~/Downloads/client-files      # exit 1 if anything is found
 ```
 
-`scan` reads every file, including ignored ones (an upload doesn't read `.gitignore`), except `.git`, `node_modules`, virtualenvs and caches. It prints the file, line and kind for each finding, never the value.
+`scan` reads every file, including ignored ones (an upload doesn't read `.gitignore`), except `.git`, `node_modules`, virtualenvs and caches. It reports personal data as well as credentials. It prints the file, line and kind for each finding, never the value. `pack` redacts both too.
 
 ## Dashboard
 
 - **Total cost** and the share of tokens processed on the Mac, Flash and K3.
 - **Columns** for the Mac, the Flash model and the K3 model (labels from `prices.json`): cost, jobs, requests, tokens in and out.
-- **Auto-routed** strip: requests per route, the router model, decision count, average decision time and fallbacks.
+- **Auto-routed** strip: requests per route, the router model, decision count, average decision time, fallbacks, and how many credentials and personal details were redacted.
 - **Jobs.** Type a label and press **Start job** (or Enter); every request is tagged with it until **End job**. Starting a new job closes the open one. Untagged requests show as *untagged*. The open job survives a restart.
 - **Table** grouped by job, backend and model. Click a row (or focus it and press Enter) to highlight it; click again or press Esc to clear.
 - **Reset day** deletes every logged request and job after a confirmation. **Export CSV** downloads every request with its route and cost.
@@ -230,7 +249,7 @@ uv run test_gateway.py --only settings         # or paths, secrets, local, telny
 uv run test_gateway.py --telnyx-model moonshotai/Kimi-K3
 ```
 
-CI runs the lint and type-check from `AGENTS.md` plus `--only paths` and `--only secrets`, which need no proxy, model or keys. Run the rest locally before you push.
+CI runs the lint and type-check from `AGENTS.md`, `--only paths`, `--only secrets` and `test_redaction.py`, which need no proxy, model or keys. Run the rest locally before you push.
 
 - **local / telnyx:** lists models, sends one non-streaming and one streaming request, checks the stream carried usage and that two rows landed with token counts. Telnyx also checks that a wrong token is rejected.
 - **auto:** one routed request decided by the router model, then dry runs of tool-loop stickiness, the secret rule (a credential, and a `.env.local` tool result) and the context rule.
