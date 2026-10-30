@@ -1117,7 +1117,7 @@ SAFE_EMAIL_LOCAL_RE = re.compile(r"(?i)^(?:git|no-?reply|do-?not-?reply)$")
 FILE_SUFFIXES = {"png", "jpg", "jpeg", "gif", "svg", "webp", "avif", "ico", "css", "scss", "js", "mjs", "cjs", "ts",
                  "tsx", "jsx", "json", "html", "txt", "tgz"}
 ASSET_DOMAIN_RE = re.compile(r"(?i)^\d+(?:\.\d+)?x\.\w+$")  # logo@2x.png, icon@1.5x.md
-URL_USERINFO_RE = re.compile(r"://[^\s/@]*$")
+URL_USERINFO_RE = re.compile(r"://[^\s/@]*@")  # the @ that ends scheme://user:pass@, found in one pass
 PHONE_RE = re.compile(
     r"(?<![\w+./-])(?:"
     r"\+\d{1,3}[ .-]?(?:\(0?\d{1,4}\)[ .-]?)?\d{1,4}(?:[ .-]?\d{2,4}){1,4}"  # +44 20 7946 0958, +1 (415) 555-0132
@@ -1189,10 +1189,11 @@ def valid_spans(candidate: str, valid: Callable[[str], bool], any_start: bool) -
 
 def iter_pii(text: str) -> Iterator[tuple[int, int, str]]:
     """Yield (start, end, kind) for each likely piece of personal data in text."""
+    userinfo_ats = {u.end() - 1 for u in URL_USERINFO_RE.finditer(text)}  # postgres://user:pass@host is not an email
     for m in EMAIL_RE.finditer(text):
         local, _, domain = m.group().partition("@")
         if SAFE_EMAIL_DOMAIN_RE.search(domain) or SAFE_EMAIL_LOCAL_RE.match(local) or ASSET_DOMAIN_RE.match(domain) \
-                or m.group("tld").lower() in FILE_SUFFIXES or URL_USERINFO_RE.search(text, 0, m.start()):
+                or m.group("tld").lower() in FILE_SUFFIXES or m.start() + len(local) in userinfo_ats:
             continue
         yield m.start(), m.end(), "email"
     checked: tuple[tuple[str, re.Pattern[str], Callable[[str], bool], bool], ...] = (
@@ -1552,7 +1553,11 @@ def create_app(settings: Settings) -> Any:
                 # Fail closed: a body that can't be read (plain text, a multipart upload) can't be redacted.
                 return JSONResponse({"error": "Hybrid Gateway only forwards JSON object bodies to Telnyx, so it can "
                                               "redact credentials and personal data first"}, status_code=415)
-            if target is not None and (redacted := redact_body(target)):
+            if target is not None and len(raw) > 200_000:  # big bodies: redact off the event loop
+                redacted = await anyio.to_thread.run_sync(redact_body, target)
+            elif target is not None:
+                redacted = redact_body(target)
+            if target is not None and redacted:
                 raw = json.dumps(target).encode()
                 counts = ", ".join(f"{k} x{n}" if n > 1 else k for k, n in Counter(redacted).items())
                 print(f"hybrid-gateway: redacted {len(redacted)} private value(s) before sending to Telnyx: {counts}",

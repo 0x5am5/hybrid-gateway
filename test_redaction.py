@@ -1131,6 +1131,26 @@ def test_lookalikes_are_not_treated_as_personal_data(gw: Gateway, text: str) -> 
     assert sent.json["messages"] == [{"role": "user", "content": text}]
 
 
+def test_detection_stays_linear_on_large_exports() -> None:
+    """Codex review on PR #1: every email used to rescan all the text before it (5 s for this input)."""
+    import time
+
+    text = "\n".join(f"Customer {i},customer{i}@acme-test.co.uk,+44 20 7946 {i % 10000:04d}" for i in range(32_000))
+    started = time.perf_counter()
+    found = gateway.find_secrets(text)
+    assert len(found) == 64_000
+    assert time.perf_counter() - started < 3, "PII detection has gone quadratic"
+
+
+def test_a_large_body_is_redacted_off_the_event_loop(gw: Gateway) -> None:
+    rows = "\n".join(f"customer{i}@acme-test.co.uk" for i in range(20_000))
+    gw.post("/telnyx/v1/chat/completions", chat({"role": "user", "content": rows}))
+
+    [sent] = gw.upstreams.telnyx
+    assert len(sent.raw) > 200_000 and "@acme-test.co.uk" not in sent.raw.decode()
+    assert gw.rows()[-1]["redactions"] == 20_000
+
+
 def test_personal_data_never_reaches_the_log_database_or_stderr(gw: Gateway,
                                                                 capsys: pytest.CaptureFixture[str]) -> None:
     p = fake_pii()
